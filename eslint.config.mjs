@@ -10,6 +10,17 @@ export default tseslint.config(
   security.configs.recommended, // OWASP A03: detecta injection patterns
   prettier,
   {
+    // projectService: true → typescript-eslint v8 descobre o tsconfig.json mais próximo
+    // de cada arquivo automaticamente (sem precisar listar caminhos manualmente).
+    // tsconfigRootDir aponta para a raiz do monorepo para resolução correta.
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
+  {
     rules: {
       // Forçar uso de tipos explícitos em retornos de funções públicas
       '@typescript-eslint/explicit-function-return-type': 'error',

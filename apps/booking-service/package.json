@@ -19,7 +19,7 @@
     "@nestjs/core": "^11.0.0",
     "@nestjs/microservices": "^11.0.0",
     "@nestjs/platform-express": "^11.0.0",
-    "@nestjs/schedule": "^4.0.0",
+    "@nestjs/schedule": "^6.0.0",
     "@prisma/client": "^7.0.0",
     "@showpass/kafka": "workspace:*",
     "@showpass/redis": "workspace:*",

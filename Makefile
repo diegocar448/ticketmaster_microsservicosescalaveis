@@ -6,7 +6,7 @@
 .PHONY: dev build test lint type-check \
         infra-up infra-down infra-logs \
         db-migrate db-seed db-studio \
-        clean help
+        github-setup clean help
 
 # ─── Desenvolvimento ──────────────────────────────────────────────────────────
 
@@ -73,6 +73,19 @@ clean:
 	pnpm run clean
 	docker compose down -v  # remove volumes de dados locais (cuidado: apaga dados!)
 
+# ─── GitHub — Branch Protection ──────────────────────────────────────────────
+
+# Configura branch protection na main via GitHub CLI.
+# Deve ser rodado UMA VEZ após criar o repositório no GitHub.
+# Pré-requisito: gh auth login
+# Uso: make github-setup GITHUB_REPO=seu-usuario/showpass
+github-setup:
+	@if [ -z "$(GITHUB_REPO)" ]; then \
+		echo "Erro: defina GITHUB_REPO. Ex: make github-setup GITHUB_REPO=seu-usuario/showpass"; \
+		exit 1; \
+	fi
+	GITHUB_REPO=$(GITHUB_REPO) sh .github/branch-protection.sh
+
 # ─── Setup inicial ────────────────────────────────────────────────────────────
 
 # Setup completo do ambiente do zero
@@ -117,4 +130,8 @@ help:
 	@echo "Build:"
 	@echo "  make build        Build de produção de todos os serviços"
 	@echo "  make clean        Remove builds e volumes locais"
+	@echo ""
+	@echo "GitHub (rodar uma vez após criar o repositório):"
+	@echo "  make github-setup GITHUB_REPO=owner/repo"
+	@echo "                    Configura branch protection na main"
 	@echo ""

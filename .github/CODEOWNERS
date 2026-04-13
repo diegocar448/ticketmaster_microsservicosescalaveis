@@ -1,0 +1,28 @@
+# .github/CODEOWNERS
+#
+# Define revisores obrigatórios por área do código.
+# Qualquer PR que toque esses arquivos EXIGE aprovação do owner listado.
+# Documentação: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Formato: <padrão>  <@usuário ou @org/equipe>
+# O padrão mais específico tem precedência sobre os genéricos.
+
+# ─── Padrão global — qualquer alteração requer revisão ───────────────────────
+*  @seu-usuario
+
+# ─── Áreas críticas de segurança — revisão obrigatória ───────────────────────
+
+# Auth service: qualquer mudança em autenticação/tokens é alto risco
+apps/auth-service/   @seu-usuario
+
+# Locks de assentos: núcleo do anti-double-booking
+apps/booking-service/src/modules/locks/   @seu-usuario
+packages/redis/src/   @seu-usuario
+
+# Payment: integração Stripe e webhooks HMAC
+apps/payment-service/   @seu-usuario
+
+# ─── Infra — mudanças de infra têm impacto em produção ───────────────────────
+infra/   @seu-usuario
+.github/workflows/   @seu-usuario
+docker-compose.yml   @seu-usuario
