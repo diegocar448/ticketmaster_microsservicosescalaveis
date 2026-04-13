@@ -13,7 +13,8 @@
     },
     "test": {
       "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", ".env.test"]
+      "inputs": ["$TURBO_DEFAULT$", ".env.test"],
+      "cache": false
     },
     "lint": {
       "inputs": ["$TURBO_DEFAULT$"]
