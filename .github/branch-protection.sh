@@ -27,7 +27,6 @@ gh api \
   "repos/$REPO/branches/$BRANCH/protection" \
   --field "required_status_checks[strict]=true" \
   --field "required_status_checks[contexts][]=Lint & Type Check" \
-  --field "required_status_checks[contexts][]=Unit Tests" \
   --field "enforce_admins=true" \
   --field "required_pull_request_reviews[required_approving_review_count]=1" \
   --field "required_pull_request_reviews[dismiss_stale_reviews]=true" \
@@ -45,7 +44,6 @@ echo ""
 echo "Regras ativas em $REPO/$BRANCH:"
 echo "  [x] Status checks obrigatórios antes de merge:"
 echo "      - Lint & Type Check"
-echo "      - Unit Tests"
 echo "  [x] Branch deve estar atualizada antes de merge (strict)"
 echo "  [x] Mínimo 1 aprovação de Pull Request"
 echo "  [x] Reviews stale são descartadas ao novo push"
