@@ -811,18 +811,178 @@ jobs:
 
 ---
 
+## Passo 1.14 — Proteger a branch main no GitHub
+
+> **Por que é obrigatório?**
+> Sem proteção, qualquer membro do time (ou você mesmo num momento de descuido) pode fazer `git push origin main` direto — pulando CI, code review e testes. Isso é o tipo de acidente que derruba produção às 23h de sexta-feira.
+>
+> O GitHub tem dois sistemas de proteção. Usamos o mais moderno: **Rulesets** (Settings → Rules → Rulesets).
+
+### Passo a passo no GitHub
+
+1. Acesse o repositório no GitHub
+2. Vá em **Settings → Rules → Rulesets → New branch ruleset**
+3. Configure os campos:
+
+| Campo | Valor |
+|---|---|
+| **Ruleset name** | `main-protection` |
+| **Enforcement status** | `Active` ← **crítico**: se ficar `Disabled` a regra não funciona |
+| **Target branches** | Clique em **Add target** → selecione **Default** (main) |
+
+4. Em **Branch rules**, marque:
+
+| Regra | Por que |
+|---|---|
+| ☑ **Restrict deletions** | Impede deletar a branch main acidentalmente |
+| ☑ **Require a pull request before merging** | Todo código entra via PR — sem push direto |
+| Required approvals: **0** | OK para projeto solo; em equipe coloque 1+ |
+| ☑ **Block force pushes** | Impede `git push --force` na main — preserva histórico |
+
+5. Em **Allowed merge methods**, deixe: `Merge`, `Squash`, `Rebase`
+6. Clique em **Create**
+
+> **Nota:** O **Require status checks to pass** (que obriga o CI a passar antes do merge) será ativado no **Capítulo 15** quando o pipeline de CI/CD estiver completo. Por enquanto deixe desmarcado — os workflows ainda não existem no repositório remoto.
+
+Com essa configuração, qualquer `git push origin main` será rejeitado:
+
+```
+! [remote rejected] main -> main (protected branch hook declined)
+error: failed to push some refs to 'github.com:seu-usuario/showpass'
+```
+
+---
+
+## Passo 1.15 — Fluxo de trabalho com branches
+
+A partir de agora, **todo trabalho é feito em branches**. Nenhum commit vai direto na main.
+
+```
+main (protegida — não aceita push direto)
+  │
+  ├── feat/cap02-shared-packages   ← Capítulo 2
+  │     └── commits → PR → merge
+  │
+  ├── feat/cap03-api-gateway       ← Capítulo 3
+  │     └── commits → PR → merge
+  │
+  ├── feat/cap04-auth-service      ← Capítulo 4
+  │     └── commits → PR → merge
+  │
+  └── ...e assim por diante
+```
+
+### Fluxo por capítulo
+
+```bash
+# 1. Partir sempre da main atualizada
+git checkout main
+git pull
+
+# 2. Criar branch para o capítulo
+git checkout -b feat/cap02-shared-packages
+
+# 3. Implementar o capítulo (vários commits pequenos)
+git add .
+git commit -m "feat: add @showpass/types package with Zod schemas"
+
+git add .
+git commit -m "feat: add @showpass/redis package with Lua scripts"
+
+git add .
+git commit -m "feat: add @showpass/kafka module"
+
+# 4. Push da branch para o GitHub
+git push -u origin feat/cap02-shared-packages
+
+# 5. Abrir Pull Request via GitHub CLI
+gh pr create \
+  --title "feat: shared packages e Prisma schemas" \
+  --body "Capítulo 2 — @showpass/types, @showpass/redis, @showpass/kafka e Prisma por bounded context"
+
+# 6. Após review, fazer merge via GitHub (botão na interface)
+#    Ou via CLI (squash = um commit limpo por feature):
+gh pr merge --squash
+
+# 7. Voltar para main atualizada e deletar a branch local
+git checkout main
+git pull
+git branch -d feat/cap02-shared-packages
+```
+
+### Convenção de nomes de branches
+
+| Tipo | Padrão | Exemplo |
+|---|---|---|
+| Feature / Capítulo | `feat/cap{NN}-descricao` | `feat/cap02-shared-packages` |
+| Bug fix | `fix/descricao` | `fix/redis-lock-ttl` |
+| Infra / CI | `chore/descricao` | `chore/update-docker-compose` |
+| Documentação | `docs/descricao` | `docs/adr-kafka-async` |
+
+### Conventional Commits — padrão de mensagens
+
+O workflow `pr-title.yml` valida que o **título do PR** segue este padrão. Use também nos commits:
+
+| Prefixo | Quando usar |
+|---|---|
+| `feat:` | Nova funcionalidade ou capítulo |
+| `fix:` | Correção de bug |
+| `chore:` | Manutenção, CI, atualização de deps |
+| `docs:` | Documentação, ADRs, READMEs |
+| `test:` | Testes (sem mudar código de produção) |
+| `refactor:` | Refatoração sem mudança de comportamento |
+| `perf:` | Melhoria de performance |
+| `ci:` | Mudanças no pipeline CI/CD |
+
+### Commits esperados por capítulo
+
+```
+feat/cap01-ambiente:
+  feat: initialize Turborepo monorepo with pnpm workspaces
+  feat: add Docker Compose with isolated networks (public/private/data)
+  feat: add TypeScript strict base config shared across all apps
+  feat: add ESLint v9 flat config with eslint-plugin-security
+  feat: add NestJS app skeletons with Dockerfiles
+  chore: add GitHub Actions CI pipeline (lint, type-check, tests)
+  chore: add branch protection ruleset via GitHub Rulesets
+
+feat/cap02-shared-packages:
+  feat: add @showpass/types with Zod schemas for events, bookings, payments
+  feat: add @showpass/redis with acquireLock/releaseLock Lua scripts
+  feat: add @showpass/kafka module with typed producer
+  feat: add Prisma schemas per bounded context
+
+feat/cap03-api-gateway:
+  feat: add API Gateway with JWT RS256 middleware
+  feat: add rate limiting (Throttler) per IP
+  feat: add Helmet.js security headers (OWASP A05)
+  feat: add virtual waiting queue for high-demand events
+
+feat/cap04-auth-service:
+  feat: add auth service with JWT RS256 + refresh token rotation
+  feat: add OrganizerGuard and BuyerGuard
+  feat: add bcrypt with cost factor 12 (OWASP A02)
+  feat: store refresh token as SHA-256 hash
+
+...e assim por diante
+```
+
+---
+
 ## Recapitulando
 
 Neste capítulo você configurou:
 
 1. **Turborepo** com pipeline de build cacheado — builds paralelos e incrementais
 2. **Docker Compose** com 3 redes isoladas (public/private/data) — segurança por design
-3. **TypeScript 6.0 strict** como base compartilhada — zero tolerância a `any`
+3. **TypeScript strict** como base compartilhada — zero tolerância a `any`
 4. **ESLint + eslint-plugin-security** — detecta padrões de injection em tempo de lint
-5. **PostgreSQL 18** com databases separados por serviço — bounded context no nível de dados
-6. **Kafka 4.2 KRaft** — sem ZooKeeper, setup mais simples e moderno
-7. **CI/CD desde o dia 1** — lint, type-check e testes rodam em todo PR
-8. **Padrão de diretórios** para serviços NestJS — replicado em todos os `apps/`
+5. **PostgreSQL** com databases separados por serviço — bounded context no nível de dados
+6. **Kafka KRaft** — sem ZooKeeper, setup mais simples e moderno
+7. **GitHub Actions CI** — lint, type-check e testes rodam em todo PR
+8. **Branch Protection via Rulesets** — push direto na main bloqueado, PRs obrigatórios
+9. **Fluxo de branches por capítulo** — convenção de nomes e Conventional Commits
+10. **Padrão de diretórios** para serviços NestJS — replicado em todos os `apps/`
 
 ---
 

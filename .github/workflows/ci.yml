@@ -5,6 +5,13 @@
 #   Cap 02: adiciona db:migrate no job de testes
 #   Cap 14: adiciona testes E2E e load test k6
 #   Cap 15: adiciona build Docker, push ECR, deploy EKS
+#
+# ─── Branch Protection ────────────────────────────────────────────────────────
+# Os nomes dos jobs abaixo (name:) são referenciados no script de branch protection:
+#   .github/branch-protection.sh → required_status_checks[contexts][]
+#
+# IMPORTANTE: se renomear um job, atualizar também o branch-protection.sh.
+# Renomear sem atualizar quebra o required check e PRs ficam impossibilitados de merge.
 
 name: CI
 
@@ -21,6 +28,7 @@ concurrency:
 
 jobs:
   # ─── Qualidade de código ──────────────────────────────────────────────────────
+  # Nome "Lint & Type Check" é referenciado no branch-protection.sh — não renomear
   quality:
     name: Lint & Type Check
     runs-on: ubuntu-latest
@@ -39,6 +47,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Cache do Turborepo entre runs — builds incrementais no CI
+      - name: Cache Turborepo
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-
+
       # Lint em todos os pacotes em paralelo via Turborepo
       - name: Lint
         run: pnpm turbo run lint
@@ -53,6 +70,7 @@ jobs:
         # continue-on-error: true  ← descomente se quiser não bloquear na auditoria
 
   # ─── Testes unitários ─────────────────────────────────────────────────────────
+  # Nome "Unit Tests" é referenciado no branch-protection.sh — não renomear
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
@@ -71,6 +89,14 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Cache Turborepo
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-
 
       # Turborepo cache: se o código não mudou, reutiliza resultado anterior
       - name: Run Tests
