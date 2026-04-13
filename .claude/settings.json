@@ -10,7 +10,8 @@
       "Bash(pnpm install:*)",
       "Bash(awk '{print $5, $9}')",
       "Bash(pnpm list:*)",
-      "Bash(pnpm info:*)"
+      "Bash(pnpm info:*)",
+      "Bash(pnpm turbo:*)"
     ]
   },
   "hooks": {

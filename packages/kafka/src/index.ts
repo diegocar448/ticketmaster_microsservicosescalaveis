@@ -1,5 +1,5 @@
 // packages/kafka/src/index.ts
 // Módulo Kafka reutilizável — implementação completa no Capítulo 2.
-// Por enquanto exporta apenas os tipos dos tópicos para não quebrar o type-check.
-
-export * from './kafka-topics.js';
+// KafkaModule e KafkaProducerService são adicionados no Cap 2.
+// Arquivo intencionalmente vazio para não gerar erros de type-check agora.
+export {};
