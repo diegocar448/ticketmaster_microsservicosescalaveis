@@ -1,0 +1,79 @@
+# .github/workflows/ci.yml
+#
+# Pipeline base — roda em todo PR e push para main.
+# Cada capítulo vai expandir este arquivo:
+#   Cap 02: adiciona db:migrate no job de testes
+#   Cap 14: adiciona testes E2E e load test k6
+#   Cap 15: adiciona build Docker, push ECR, deploy EKS
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancelar runs anteriores do mesmo PR (economiza minutos do GitHub Actions)
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── Qualidade de código ──────────────────────────────────────────────────────
+  quality:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Lint em todos os pacotes em paralelo via Turborepo
+      - name: Lint
+        run: pnpm turbo run lint
+
+      # Type-check — TypeScript strict mode, sem any
+      - name: Type Check
+        run: pnpm turbo run type-check
+
+      # Auditoria de segurança de dependências (OWASP A06)
+      - name: Security Audit
+        run: pnpm audit --audit-level=high
+        # continue-on-error: true  ← descomente se quiser não bloquear na auditoria
+
+  # ─── Testes unitários ─────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: quality # só roda se lint/type-check passaram
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Turborepo cache: se o código não mudou, reutiliza resultado anterior
+      - name: Run Tests
+        run: pnpm turbo run test
+        env:
+          NODE_ENV: test

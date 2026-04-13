@@ -1,0 +1,296 @@
+# docker-compose.yml
+#
+# Ambiente completo de desenvolvimento.
+# Redes isoladas por responsabilidade:
+#   - public:  somente o que o mundo externo acessa (api-gateway, web)
+#   - private: comunicação interna entre serviços (nunca exposta)
+#   - data:    bancos de dados e brokers (nunca acessíveis externamente)
+
+services:
+
+  # ─────────────────────────────────────────────
+  # INFRAESTRUTURA — rede `data` (isolada)
+  # ─────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: showpass
+      POSTGRES_PASSWORD: showpass_dev_secret
+      POSTGRES_DB: showpass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Script de init: cria databases separados por serviço
+      - ./infra/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432" # exposto apenas para dev (DBeaver, TablePlus)
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U showpass"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis (dev: instância única) ────────────────────────────────────────────
+  # Em produção usamos Redis Cluster Sentinel HA (3 nós: 1 primary + 2 replicas + 3 sentinels)
+  # Sentinel detecta falha do primary e promove uma replica automaticamente (failover < 30s)
+  # Ver: infra/terraform/main.tf → aws_elasticache_replication_group (num_cache_clusters: 3)
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass redis_dev_secret
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+    ports:
+      - "6379:6379"
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis_dev_secret", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  kafka:
+    image: apache/kafka:3.7.0
+    restart: unless-stopped
+    environment:
+      # KRaft mode — sem ZooKeeper
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_MS: 604800000 # 7 dias
+    ports:
+      - "9092:9092"
+    networks:
+      - data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    restart: unless-stopped
+    environment:
+      KAFKA_CLUSTERS_0_NAME: showpass-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    ports:
+      - "8080:8080" # http://localhost:8080
+    networks:
+      - data
+      - public
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false" # desabilitar para dev (habilitar em prod)
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sf http://localhost:9200/_cluster/health | grep -v '\"status\":\"red\"'",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ─────────────────────────────────────────────
+  # APLICAÇÕES — rede `private`
+  # ─────────────────────────────────────────────
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: apps/api-gateway/Dockerfile
+      target: dev
+    restart: unless-stopped
+    env_file: apps/api-gateway/.env
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./apps/api-gateway/src:/app/apps/api-gateway/src # hot reload em dev
+    networks:
+      - public
+      - private
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: apps/auth-service/Dockerfile
+      target: dev
+    restart: unless-stopped
+    env_file: apps/auth-service/.env
+    ports:
+      - "3002:3002"
+    volumes:
+      - ./apps/auth-service/src:/app/apps/auth-service/src
+    networks:
+      - private
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  event-service:
+    build:
+      context: .
+      dockerfile: apps/event-service/Dockerfile
+      target: dev
+    restart: unless-stopped
+    env_file: apps/event-service/.env
+    ports:
+      - "3003:3003"
+    volumes:
+      - ./apps/event-service/src:/app/apps/event-service/src
+    networks:
+      - private
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  booking-service:
+    build:
+      context: .
+      dockerfile: apps/booking-service/Dockerfile
+      target: dev
+    restart: unless-stopped
+    env_file: apps/booking-service/.env
+    ports:
+      - "3004:3004"
+    volumes:
+      - ./apps/booking-service/src:/app/apps/booking-service/src
+    networks:
+      - private
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: apps/payment-service/Dockerfile
+      target: dev
+    restart: unless-stopped
+    env_file: apps/payment-service/.env
+    ports:
+      - "3005:3005"
+    volumes:
+      - ./apps/payment-service/src:/app/apps/payment-service/src
+    networks:
+      - private
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  search-service:
+    build:
+      context: .
+      dockerfile: apps/search-service/Dockerfile
+      target: dev
+    restart: unless-stopped
+    env_file: apps/search-service/.env
+    ports:
+      - "3006:3006"
+    volumes:
+      - ./apps/search-service/src:/app/apps/search-service/src
+    networks:
+      - private
+      - data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  worker-service:
+    build:
+      context: .
+      dockerfile: apps/worker-service/Dockerfile
+      target: dev
+    restart: unless-stopped
+    env_file: apps/worker-service/.env
+    volumes:
+      - ./apps/worker-service/src:/app/apps/worker-service/src
+    networks:
+      - private
+      - data
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: dev
+    restart: unless-stopped
+    env_file: apps/web/.env
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/web/src:/app/apps/web/src
+    networks:
+      - public
+      - private
+
+# ─────────────────────────────────────────────
+# REDES
+# ─────────────────────────────────────────────
+networks:
+  public:
+    # Tráfego externo → api-gateway, web
+  private:
+    # Comunicação interna entre serviços
+    internal: true
+  data:
+    # Bancos, Redis, Kafka — nunca acessíveis externamente
+    internal: true
+
+volumes:
+  postgres_data:
+  elasticsearch_data:

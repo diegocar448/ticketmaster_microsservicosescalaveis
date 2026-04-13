@@ -1,0 +1,51 @@
+# Dependências
+node_modules/
+.pnpm-store/
+
+# Build
+dist/
+.next/
+build/
+
+# Gerado pelo Prisma
+prisma/generated/
+src/prisma/generated/
+
+# Chaves privadas — NUNCA commitar
+apps/auth-service/keys/private.pem
+apps/auth-service/src/keys/private.key
+**/*.pem
+**/*.key
+!**/*.pub.pem
+!**/*.pub.key
+
+# Variáveis de ambiente — apenas .example vai para o repositório
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Turborepo cache
+.turbo/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Testes
+coverage/
+test-results/
+playwright-report/
+
+# Docker volumes locais
+postgres_data/
+elasticsearch_data/

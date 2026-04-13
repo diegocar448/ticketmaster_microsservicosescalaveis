@@ -1,0 +1,63 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.youtube.com)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:academy.especializati.com.br)",
+      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('/home/diegocar448/projects/idea_saas/.claude/settings.json','utf8'\\)\\); console.log\\('JSON valido'\\);\")",
+      "Bash(pnpm --version)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const p=process.env.TOOL_INPUT_FILE_PATH||''; if(p.includes('prisma/migrations/')) { console.error('BLOQUEADO: prisma/migrations/ e imutavel. Crie uma nova migration com db:migrate:dev'); process.exit(1); }\""
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const p=process.env.TOOL_INPUT_FILE_PATH||''; if(p.includes('apps/auth-service/src/')) { console.warn('ATENCAO: Editando auth-service. Leia apps/auth-service/CLAUDE.md antes de continuar.'); }\""
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const p=process.env.TOOL_INPUT_FILE_PATH||''; if(p.includes('seat-lock')) { console.warn('ATENCAO: Editando logica de lock de assentos. Leia docs/decisions/ADR-002-redis-setnx-seat-locking.md.'); }\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const p=process.env.TOOL_INPUT_FILE_PATH||''; if(p.endsWith('.ts')||p.endsWith('.tsx')) { console.log('Lembrete: rode pnpm typecheck e pnpm lint para verificar o codigo editado.'); }\""
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const p=process.env.TOOL_INPUT_FILE_PATH||''; if(p.endsWith('schema.prisma')) { console.log('schema.prisma editado. Lembrete: rode pnpm --filter <service> db:migrate:dev para gerar a migration.'); }\""
+          }
+        ]
+      }
+    ]
+  }
+}
