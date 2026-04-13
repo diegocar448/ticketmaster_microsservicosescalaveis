@@ -6,7 +6,11 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:academy.especializati.com.br)",
       "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('/home/diegocar448/projects/idea_saas/.claude/settings.json','utf8'\\)\\); console.log\\('JSON valido'\\);\")",
-      "Bash(pnpm --version)"
+      "Bash(pnpm --version)",
+      "Bash(pnpm install:*)",
+      "Bash(awk '{print $5, $9}')",
+      "Bash(pnpm list:*)",
+      "Bash(pnpm info:*)"
     ]
   },
   "hooks": {

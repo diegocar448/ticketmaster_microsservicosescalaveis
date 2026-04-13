@@ -1,8 +1,7 @@
 // packages/types/src/kafka-topics.ts
-// Tópicos Kafka e schemas dos eventos de domínio.
-// Centralizar aqui garante que producer e consumer usem o mesmo contrato.
-
-// ─── Nomes dos tópicos ────────────────────────────────────────────────────────
+// Nomes dos tópicos Kafka e schemas dos eventos de domínio.
+// Centralizar aqui garante que producer e consumer usem o mesmo contrato
+// e que o frontend possa referenciar os tópicos sem depender de @showpass/kafka.
 
 export const KAFKA_TOPICS = {
   // Booking

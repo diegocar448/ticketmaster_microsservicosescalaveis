@@ -1,6 +1,5 @@
 // packages/kafka/src/index.ts
-// Módulo Kafka reutilizável — exportado para todos os serviços NestJS.
-// Implementação completa no Capítulo 2.
+// Módulo Kafka reutilizável — implementação completa no Capítulo 2.
+// Por enquanto exporta apenas os tipos dos tópicos para não quebrar o type-check.
 
-export * from './kafka.module.js';
-export * from './kafka-producer.service.js';
+export * from './kafka-topics.js';
