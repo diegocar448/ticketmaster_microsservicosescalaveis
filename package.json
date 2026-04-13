@@ -25,5 +25,10 @@
     "node": ">=22.0.0",
     "pnpm": ">=9.0.0"
   },
+  "pnpm": {
+    "overrides": {
+      "tar": ">=7.5.11"
+    }
+  },
   "packageManager": "pnpm@9.15.0"
 }
