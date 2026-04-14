@@ -813,6 +813,191 @@ Impacto do cache em picos de evento:
 
 ---
 
+## Testando na prática
+
+A partir daqui você cria o primeiro recurso de negócio real: venue + evento. Você precisa do token de organizer do Cap 04.
+
+### O que precisa estar rodando
+
+```bash
+# Terminal 1 — infraestrutura
+docker compose up -d
+
+# Terminal 2 — auth-service
+pnpm --filter auth-service run dev          # porta 3006
+
+# Terminal 3 — event-service
+pnpm --filter event-service run db:generate
+pnpm --filter event-service run db:migrate
+pnpm --filter event-service run db:seed     # popula categories e plans
+pnpm --filter event-service run dev         # porta 3003
+```
+
+### Preparar o token de organizer
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:3006/auth/organizers/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@rockshows.com.br","password":"Senha@Forte123"}' \
+  | jq -r .accessToken)
+echo "Token: $TOKEN"
+```
+
+> Se ainda não registrou o organizer, volte para a seção "Testando na prática" do Cap 04.
+
+### Passo a passo
+
+**1. Criar um venue (com geração de assentos)**
+
+```bash
+curl -s -X POST http://localhost:3003/venues \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Estádio do Maracanã",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "country": "BR",
+    "address": "Av. Presidente Castelo Branco, s/n",
+    "zipCode": "20271-130",
+    "capacity": 78838,
+    "rows": 100,
+    "seatsPerRow": 80
+  }' | jq .
+```
+
+Resposta esperada:
+
+```json
+{
+  "id": "018e1234-5678-7abc-def0-111213141516",
+  "name": "Estádio do Maracanã",
+  "city": "Rio de Janeiro",
+  "state": "RJ",
+  "capacity": 78838,
+  "totalSeats": 8000
+}
+```
+
+Salve o `id` do venue:
+
+```bash
+VENUE_ID="018e1234-..."   # substitua pelo id retornado
+```
+
+**2. Buscar o ID da categoria**
+
+```bash
+curl -s http://localhost:3003/categories | jq .
+```
+
+Salve um `id`:
+
+```bash
+CATEGORY_ID="018e..."   # substitua pelo id retornado
+```
+
+**3. Criar um evento**
+
+```bash
+curl -s -X POST http://localhost:3003/events \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"title\": \"Rock in Rio 2025\",
+    \"slug\": \"rock-in-rio-2025\",
+    \"description\": \"O maior festival do Brasil\",
+    \"categoryId\": \"$CATEGORY_ID\",
+    \"venueId\": \"$VENUE_ID\",
+    \"startsAt\": \"2025-09-26T18:00:00.000Z\",
+    \"endsAt\": \"2025-10-05T23:59:00.000Z\",
+    \"maxTicketsPerOrder\": 4,
+    \"currency\": \"BRL\"
+  }" | jq .
+```
+
+Resposta esperada:
+
+```json
+{
+  "id": "018e9999-...",
+  "title": "Rock in Rio 2025",
+  "slug": "rock-in-rio-2025",
+  "status": "draft",
+  "venue": { "name": "Estádio do Maracanã", "city": "Rio de Janeiro", "state": "RJ" },
+  "category": { "name": "Música", "slug": "musica" }
+}
+```
+
+Salve o `id` e o `slug`:
+
+```bash
+EVENT_ID="018e9999-..."
+```
+
+**4. Publicar o evento (draft → published)**
+
+```bash
+curl -s -X PATCH http://localhost:3003/events/$EVENT_ID/status \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "published"}' | jq .status
+```
+
+Resposta esperada: `"published"`
+
+**5. Colocar à venda (published → on_sale)**
+
+```bash
+curl -s -X PATCH http://localhost:3003/events/$EVENT_ID/status \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "on_sale"}' | jq .status
+```
+
+**6. Buscar evento por slug (sem autenticação)**
+
+```bash
+curl -s http://localhost:3003/events/rock-in-rio-2025 | jq .
+```
+
+Chame duas vezes e observe que a segunda é mais rápida — o Redis cache foi populado na primeira chamada.
+
+**7. Testar transição inválida de status**
+
+```bash
+# Tentar voltar de on_sale para draft (inválido)
+curl -s -X PATCH http://localhost:3003/events/$EVENT_ID/status \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "draft"}' | jq .
+```
+
+Resposta esperada: `400 Bad Request` com mensagem sobre transição inválida.
+
+**8. Tenant isolation — outro organizer não vê seus eventos**
+
+```bash
+# Criar outro organizer
+curl -s -X POST http://localhost:3006/auth/organizers/register \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Outro","email":"outro@teste.com","password":"Outro@Senha1"}' > /dev/null
+
+OTHER_TOKEN=$(curl -s -X POST http://localhost:3006/auth/organizers/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"outro@teste.com","password":"Outro@Senha1"}' | jq -r .accessToken)
+
+# Tentar editar evento do primeiro organizer com o token do segundo
+curl -s -X PATCH http://localhost:3003/events/$EVENT_ID/status \
+  -H "Authorization: Bearer $OTHER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "draft"}' | jq .
+```
+
+Resposta esperada: `403 Forbidden` ou `404 Not Found` — o segundo organizer não tem acesso.
+
+---
+
 ## Recapitulando
 
 1. **Repository pattern** — `EventsRepository` encapsula todas as queries Prisma; controllers ficam limpos

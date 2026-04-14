@@ -638,6 +638,71 @@ export default function LoginPage(): JSX.Element {
 
 ---
 
+## Testando na prática
+
+Este é o primeiro capítulo com interface visual no browser. Você vai ver o fluxo de login funcionando de ponta a ponta.
+
+### O que precisa estar rodando
+
+```bash
+# Terminal 1 — infraestrutura
+docker compose up -d
+
+# Terminal 2 — auth-service
+pnpm --filter auth-service run dev          # porta 3006
+
+# Terminal 3 — api-gateway
+pnpm --filter api-gateway run dev           # porta 3000
+
+# Terminal 4 — frontend
+pnpm --filter web run dev                   # porta 3001
+```
+
+### Passo a passo no browser
+
+**1. Abrir o frontend**
+
+Acesse: **http://localhost:3001**
+
+Você deve ver a home page com header de navegação. Como ainda não há eventos cadastrados, o corpo estará vazio (ou com estado de "nenhum evento").
+
+**2. Acessar a tela de login**
+
+Navegue para: **http://localhost:3001/login**
+
+**3. Fazer login como organizer**
+
+Use as credenciais criadas no Cap 04:
+
+- Email: `admin@rockshows.com.br`
+- Senha: `Senha@Forte123`
+
+Após o login, você deve ser redirecionado para o dashboard.
+
+**4. Verificar que o token foi armazenado**
+
+Abra o DevTools do browser (F12) → Application → Cookies.
+
+Você verá o cookie `refresh_token` com flag `httpOnly` — **não acessível via JavaScript** (OWASP A07).
+
+No Zustand (Application → Local Storage), você verá o estado de auth com `accessToken` e dados do usuário.
+
+**5. Verificar proteção de rota**
+
+Faça logout e tente acessar diretamente: **http://localhost:3001/dashboard**
+
+O middleware Edge Runtime deve redirecionar imediatamente para `/login` sem flash de conteúdo.
+
+**6. Verificar auto-refresh do token**
+
+Aguarde 15 minutos com a aba aberta (ou manipule a expiração no DevTools → Application → Local Storage para um timestamp passado). Ao fazer qualquer ação, o Zustand renova o access token automaticamente via `/auth/organizers/refresh` sem fazer logout.
+
+**7. Verificar request para o API Gateway**
+
+No DevTools → Network, filtre por `localhost:3000`. Todas as requests do frontend passam pelo gateway na porta 3000, que adiciona os headers `x-user-id` e `x-organizer-id` antes de fazer proxy para os serviços.
+
+---
+
 ## Recapitulando
 
 1. **App Router + PPR** — combina geração estática e dinâmica por componente; melhor performance

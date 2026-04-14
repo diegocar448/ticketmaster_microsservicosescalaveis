@@ -1011,6 +1011,156 @@ Adicionar ao `apps/auth-service/package.json`:
 
 ---
 
+## Testando na prática
+
+A partir deste capítulo você tem um serviço HTTP real para testar. Salve o token retornado — ele será necessário em todos os próximos capítulos.
+
+### O que precisa estar rodando
+
+```bash
+# Terminal 1 — infraestrutura
+docker compose up -d
+
+# Terminal 2 — auth-service
+pnpm --filter auth-service run db:generate
+pnpm --filter auth-service run db:migrate   # cria as tabelas
+pnpm --filter auth-service run dev          # porta 3006
+```
+
+Opcionalmente, suba o gateway para testar o fluxo completo via proxy:
+
+```bash
+# Terminal 3 — api-gateway
+pnpm --filter api-gateway run dev           # porta 3000
+```
+
+### Fluxo completo — Organizer
+
+**1. Registrar um organizer**
+
+```bash
+curl -s -X POST http://localhost:3006/auth/organizers/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Rock Shows LTDA",
+    "email": "admin@rockshows.com.br",
+    "password": "Senha@Forte123"
+  }' | jq .
+```
+
+Resposta esperada:
+
+```json
+{
+  "accessToken": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expiresIn": 900
+}
+```
+
+> O `accessToken` expira em 15 minutos. Salve-o em uma variável de shell:
+> ```bash
+> TOKEN=$(curl -s -X POST http://localhost:3006/auth/organizers/login \
+>   -H "Content-Type: application/json" \
+>   -d '{"email":"admin@rockshows.com.br","password":"Senha@Forte123"}' | jq -r .accessToken)
+> ```
+
+**2. Login de organizer**
+
+```bash
+curl -s -X POST http://localhost:3006/auth/organizers/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "admin@rockshows.com.br",
+    "password": "Senha@Forte123"
+  }' | jq .
+```
+
+Resposta esperada: mesmo formato do registro, com novo `accessToken` e `refreshToken` em cookie `httpOnly`.
+
+**3. Renovar o access token**
+
+O refresh token é enviado automaticamente no cookie. Para testar no curl, capture-o:
+
+```bash
+curl -s -c cookies.txt -X POST http://localhost:3006/auth/organizers/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@rockshows.com.br","password":"Senha@Forte123"}'
+
+# Usar o cookie para renovar o token
+curl -s -b cookies.txt -X POST http://localhost:3006/auth/organizers/refresh | jq .
+```
+
+Resposta esperada: novo `accessToken` com 15 minutos de validade.
+
+### Fluxo completo — Buyer
+
+**4. Registrar um comprador**
+
+```bash
+curl -s -X POST http://localhost:3006/auth/buyers/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "João Silva",
+    "email": "joao@email.com",
+    "password": "MinhaSenha@123"
+  }' | jq .
+```
+
+**5. Login de comprador e salvar token**
+
+```bash
+BUYER_TOKEN=$(curl -s -X POST http://localhost:3006/auth/buyers/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"joao@email.com","password":"MinhaSenha@123"}' | jq -r .accessToken)
+
+echo "Buyer token: $BUYER_TOKEN"
+```
+
+**6. Verificar que o token é rejeitado sem o Bearer**
+
+```bash
+curl -s -X GET http://localhost:3006/auth/organizers/me \
+  -H "Authorization: $TOKEN" | jq .
+```
+
+Resposta esperada: `401 Unauthorized` — o prefixo `Bearer ` é obrigatório.
+
+**7. Testar via Gateway (proxy)**
+
+Se o API Gateway estiver rodando:
+
+```bash
+# Registrar pelo gateway (porta 3000 → proxy para 3006)
+curl -s -X POST http://localhost:3000/auth/buyers/register \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Maria","email":"maria@email.com","password":"Pass@1234"}' | jq .
+```
+
+### Inspecionando o JWT
+
+Decodifique o payload do access token para ver suas claims (sem verificar a assinatura):
+
+```bash
+echo $TOKEN | cut -d'.' -f2 | base64 -d 2>/dev/null | jq .
+```
+
+Você verá algo como:
+
+```json
+{
+  "sub": "018e1234-...",
+  "email": "admin@rockshows.com.br",
+  "role": "organizer",
+  "organizerId": "018e5678-...",
+  "iat": 1710000000,
+  "exp": 1710000900
+}
+```
+
+O campo `organizerId` é o que o event-service usa para isolamento de dados por tenant.
+
+---
+
 ## Gotchas de versão (stack fixa do projeto)
 
 | Biblioteca | Mudança |

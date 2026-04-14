@@ -241,6 +241,94 @@ jobs:
 
 ---
 
+## Testando na prática
+
+O CI/CD é verificado abrindo um Pull Request real no GitHub e acompanhando os checks.
+
+### Passo a passo
+
+**1. Criar uma branch e abrir um PR**
+
+```bash
+git checkout -b feat/teste-ci
+# Faça uma mudança pequena em qualquer arquivo (ex: adicione um comentário)
+git add -A
+git commit -m "test: verificar pipeline CI"
+git push origin feat/teste-ci
+```
+
+Abra o PR no GitHub. A interface do Actions deve aparecer com os checks rodando.
+
+**2. Acompanhar o pipeline no GitHub Actions**
+
+Acesse a aba "Actions" do repositório. Você verá os jobs em paralelo:
+
+```
+build-and-test (matrix)
+  ├── auth-service      [running...]
+  ├── event-service     [running...]
+  ├── booking-service   [running...]
+  └── payment-service   [running...]
+```
+
+Cada job: instala dependências, gera Prisma client, roda lint + type-check + testes.
+
+**3. Verificar que o Turborepo remote cache foi usado**
+
+Na segunda execução do pipeline (ex: re-run ou novo commit pequeno), os jobs devem terminar mais rápido. No log você verá:
+
+```
+• Packages in scope: booking-service
+• Running build in 1 packages
+booking-service:build: cache hit, replaying output 018e...
+```
+
+Isso significa que o build não rodou novamente — o Turborepo usou o cache.
+
+**4. Forçar uma falha de lint para ver o PR bloqueado**
+
+Adicione um `console.log` em qualquer arquivo TypeScript:
+
+```typescript
+console.log('teste'); // ESLint vai reclamar: no-console
+```
+
+Faça commit e push. O check de lint deve falhar com:
+
+```
+error  Unexpected console statement  no-console
+```
+
+O PR fica bloqueado pela branch protection rule — não é possível fazer merge com check falhando.
+
+**5. Verificar assinatura da imagem Docker (em deploy)**
+
+Após merge na `main`, o pipeline de deploy gera e assina a imagem com Cosign:
+
+```bash
+# Verificar assinatura de uma imagem publicada
+cosign verify \
+  --certificate-identity "https://github.com/<org>/showpass/.github/workflows/ci.yml@refs/heads/main" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  ghcr.io/<org>/showpass/booking-service:latest
+```
+
+O K8s rejeita imagens sem assinatura válida (admission webhook).
+
+**6. Verificar que só o serviço alterado foi testado (Turborepo affected)**
+
+Em um PR que altera apenas `apps/auth-service/`, o pipeline deve exibir:
+
+```
+• Packages in scope: auth-service
+• auth-service:test    [running]
+• booking-service:test [SKIPPED] — not affected
+```
+
+O cache do Turborepo detecta o que mudou e ignora o resto.
+
+---
+
 ## Recapitulando
 
 1. **Matrix build** — build paralelo de todos os serviços no GitHub Actions; sem gargalo

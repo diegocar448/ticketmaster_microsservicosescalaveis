@@ -329,6 +329,129 @@ locals {
 
 ---
 
+## Testando na prática
+
+Para testar localmente sem custo AWS, use o [kind](https://kind.sigs.k8s.io/) (Kubernetes in Docker) ou [minikube](https://minikube.sigs.k8s.io/). Para testar o Terraform é necessário uma conta AWS (custos mínimos em free tier).
+
+### Testando os manifests K8s com kind (local)
+
+**1. Instalar kind e criar o cluster**
+
+```bash
+# Instalar kind
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.25.0/kind-linux-amd64
+chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
+
+# Criar cluster local
+kind create cluster --name showpass
+kubectl config use-context kind-showpass
+```
+
+**2. Aplicar o overlay de staging**
+
+```bash
+kubectl apply -k infra/k8s/overlays/staging
+```
+
+**3. Verificar que o deploy subiu**
+
+```bash
+kubectl get pods -n showpass
+```
+
+Saída esperada:
+
+```
+NAME                               READY   STATUS    RESTARTS
+booking-service-7d9f8b6b5-xkp2q   1/1     Running   0
+booking-service-7d9f8b6b5-mntv7   1/1     Running   0
+```
+
+**4. Verificar o RollingUpdate**
+
+Atualize a imagem para simular um deploy:
+
+```bash
+kubectl set image deployment/booking-service \
+  booking-service=ghcr.io/<org>/showpass/booking-service:v2 \
+  -n showpass
+```
+
+Observe o rollout sem downtime:
+
+```bash
+kubectl rollout status deployment/booking-service -n showpass
+# Waiting for deployment "booking-service" rollout to finish: 1 out of 2 updated...
+# deployment "booking-service" successfully rolled out
+```
+
+**5. Testar o HPA (escalonamento automático)**
+
+```bash
+# Verificar estado do HPA
+kubectl get hpa -n showpass
+
+# Gerar carga para disparar o escalonamento
+kubectl run -it --rm load --image=busybox --restart=Never -- \
+  sh -c "while true; do wget -q -O- http://booking-service/health/live; done"
+```
+
+Após ~30 segundos, `kubectl get pods -n showpass` deve mostrar novos pods sendo criados.
+
+**6. Testar Liveness e Readiness probes**
+
+```bash
+# Ver os probes configurados
+kubectl describe pod <nome-do-pod> -n showpass | grep -A5 "Liveness\|Readiness"
+```
+
+Para simular falha:
+
+```bash
+# Entrar no pod e derrubar o processo
+kubectl exec -it <nome-do-pod> -n showpass -- kill 1
+# O K8s detecta via liveness probe e reinicia o container automaticamente
+kubectl get pods -n showpass --watch
+```
+
+### Testando o Terraform (requer conta AWS)
+
+**1. Inicializar e visualizar o plano**
+
+```bash
+cd infra/terraform
+terraform init
+terraform plan -var-file="staging.tfvars" -out=tfplan
+```
+
+O `terraform plan` **não aplica nada** — apenas mostra o que seria criado. Revise antes de prosseguir.
+
+**2. Aplicar em staging**
+
+```bash
+terraform apply tfplan
+```
+
+Tempo estimado: 15–20 minutos para criar VPC, EKS, RDS, ElastiCache.
+
+**3. Verificar estado remoto no S3**
+
+```bash
+aws s3 ls s3://showpass-terraform-state/staging/
+```
+
+O arquivo `terraform.tfstate` fica no S3, compartilhado com toda a equipe.
+
+**4. Destruir o ambiente (evitar custos)**
+
+```bash
+terraform destroy -var-file="staging.tfvars"
+```
+
+> **Atenção:** Em produção, o RDS tem `deletion_protection = true`. Antes de destruir, desabilite manualmente no console AWS.
+
+---
+
 ## Recapitulando
 
 1. **RollingUpdate com `maxUnavailable: 0`** — zero downtime; sempre N pods disponíveis durante deploy

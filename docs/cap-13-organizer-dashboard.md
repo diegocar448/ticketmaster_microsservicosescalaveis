@@ -233,6 +233,67 @@ export async function GET(): Promise<NextResponse> {
 
 ---
 
+## Testando na prática
+
+O dashboard de organizador é a visão de admin do produto. Você vai verificar as métricas de vendas, o gráfico e o export CSV.
+
+### O que precisa estar rodando
+
+```bash
+docker compose up -d
+pnpm --filter auth-service run dev
+pnpm --filter event-service run dev
+pnpm --filter booking-service run dev
+pnpm --filter payment-service run dev
+pnpm --filter api-gateway run dev
+pnpm --filter web run dev
+```
+
+### Passo a passo no browser
+
+**1. Fazer login como organizer**
+
+Acesse: **http://localhost:3001/login**
+
+Use: `admin@rockshows.com.br` / `Senha@Forte123`
+
+**2. Acessar o dashboard**
+
+Navegue para: **http://localhost:3001/dashboard**
+
+Você deve ver:
+- Cards com métricas: total de ingressos vendidos, receita total, eventos ativos
+- Gráfico de barras/linhas com vendas ao longo do tempo
+- Tabela de eventos com status e progresso de vendas
+
+**3. Verificar que métricas chegam no HTML (Server Component)**
+
+No DevTools → Network, recarregue a página. A request inicial ao `/dashboard` deve retornar o HTML já com os dados das métricas — não há loading states para as métricas principais. Isso é o PPR (Partial Prerendering) em ação.
+
+**4. Exportar CSV de vendas**
+
+Clique no botão "Exportar CSV". O browser deve baixar um arquivo `vendas-rock-in-rio-2025.csv` com as colunas:
+
+```
+id,buyerName,buyerEmail,seatRow,seatNumber,pricePaid,purchasedAt
+```
+
+**5. Verificar formatação em pt-BR**
+
+Os valores monetários devem exibir `R$ 1.500,00` (ponto como separador de milhares, vírgula como decimal) — `Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })`.
+
+As datas devem exibir no formato `26/09/2025` — `Intl.DateTimeFormat('pt-BR')`.
+
+**6. Testar com outro organizer (isolamento de dados)**
+
+Faça login com `outro@teste.com` e acesse o dashboard. Você **não** deve ver os eventos nem as métricas do `admin@rockshows.com.br`. Cada organizer vê apenas seus próprios dados.
+
+**7. Verificar responsividade**
+
+Redimensione o browser para largura de 375px (iPhone). O gráfico Recharts deve se adaptar e as métricas empilharem verticalmente.
+
+---
+
 ## Recapitulando
 
 1. **Server Component** para métricas pesadas — dados chegam no HTML, zero loading state

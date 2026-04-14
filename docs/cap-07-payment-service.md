@@ -552,6 +552,127 @@ void bootstrap();
 
 ---
 
+## Testando na prática
+
+O pagamento usa o Stripe em modo teste. Você precisa da [Stripe CLI](https://stripe.com/docs/stripe-cli) instalada para simular webhooks localmente.
+
+### O que precisa estar rodando
+
+```bash
+# Terminal 1 — infraestrutura
+docker compose up -d
+
+# Terminal 2 — auth-service
+pnpm --filter auth-service run dev          # porta 3006
+
+# Terminal 3 — event-service
+pnpm --filter event-service run dev         # porta 3003
+
+# Terminal 4 — booking-service
+pnpm --filter booking-service run dev       # porta 3004
+
+# Terminal 5 — payment-service
+pnpm --filter payment-service run db:generate
+pnpm --filter payment-service run db:migrate
+pnpm --filter payment-service run dev       # porta 3002
+
+# Terminal 6 — Stripe CLI (reencaminha webhooks para o serviço local)
+stripe listen --forward-to http://localhost:3002/webhooks/stripe
+```
+
+> O Stripe CLI exibe o webhook secret na primeira linha: `> Ready! Your webhook signing secret is whsec_...`
+> Copie esse valor e configure em `.env` do payment-service: `STRIPE_WEBHOOK_SECRET=whsec_...`
+
+### Preparação
+
+```bash
+# Token de comprador
+BUYER_TOKEN=$(curl -s -X POST http://localhost:3006/auth/buyers/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"joao@email.com","password":"MinhaSenha@123"}' | jq -r .accessToken)
+
+# ID da reserva pendente (crie uma via booking-service se necessário)
+RESERVATION_ID="018eaaaa-..."
+```
+
+### Passo a passo
+
+**1. Criar uma Checkout Session no Stripe**
+
+```bash
+curl -s -X POST http://localhost:3002/orders \
+  -H "Authorization: Bearer $BUYER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"reservationId\": \"$RESERVATION_ID\",
+    \"successUrl\": \"http://localhost:3001/checkout/success\",
+    \"cancelUrl\": \"http://localhost:3001/checkout/cancel\"
+  }" | jq .
+```
+
+Resposta esperada:
+
+```json
+{
+  "orderId": "018ecccc-...",
+  "checkoutUrl": "https://checkout.stripe.com/c/pay/cs_test_...",
+  "status": "pending"
+}
+```
+
+**2. Completar o pagamento no Stripe (modo teste)**
+
+Abra o `checkoutUrl` no browser. Use o cartão de teste do Stripe:
+
+| Campo | Valor |
+|---|---|
+| Número | `4242 4242 4242 4242` |
+| Validade | qualquer data futura (ex: `12/26`) |
+| CVC | qualquer 3 dígitos (ex: `123`) |
+| CEP | qualquer (ex: `00000-000`) |
+
+Após completar, o Stripe envia o webhook `checkout.session.completed` para o Terminal 6.
+
+**3. Verificar o processamento do webhook**
+
+No terminal do payment-service, você verá:
+
+```
+[WebhookController] checkout.session.completed recebido — orderId: 018ecccc-...
+[OrderService] Pagamento confirmado — emitindo payment.confirmed para Kafka
+```
+
+**4. Verificar status do pedido**
+
+```bash
+curl -s http://localhost:3002/orders/$ORDER_ID \
+  -H "Authorization: Bearer $BUYER_TOKEN" | jq .status
+```
+
+Resposta esperada: `"paid"`
+
+**5. Simular webhook manualmente via Stripe CLI**
+
+Em vez de abrir o browser, você pode disparar o evento de confirmação diretamente:
+
+```bash
+stripe trigger checkout.session.completed
+```
+
+O payment-service receberá o evento e processará. Útil para testar o worker-service no próximo capítulo sem precisar preencher formulário de cartão.
+
+**6. Testar idempotência — entregar o webhook duas vezes**
+
+Copie o ID do evento Stripe do log (`evt_...`) e reenvie:
+
+```bash
+stripe events resend evt_...
+```
+
+O payment-service deve processar sem duplicar — o cheque de `order.status === 'paid'` impede o reprocessamento.
+
+---
+
 ## Recapitulando
 
 1. **Idempotency Key** (SHA-256 dos IDs) — mesma reserva = mesma cobrança, sem duplicar mesmo em retries

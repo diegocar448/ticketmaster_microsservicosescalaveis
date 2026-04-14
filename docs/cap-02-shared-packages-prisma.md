@@ -1119,6 +1119,84 @@ DATABASE_REPLICA_URL="postgresql://event_svc:pass@replica-host:5432/showpass_eve
 
 ---
 
+## Testando na prática
+
+Neste capítulo não há serviços HTTP — os pacotes são bibliotecas compartilhadas. Mas você pode validar que tudo compila e que os schemas Zod funcionam como esperado.
+
+### O que precisa estar rodando
+
+Apenas Node.js local (sem Docker necessário para os testes abaixo).
+
+### Passo a passo
+
+**1. Compilar os packages**
+
+```bash
+pnpm --filter @showpass/types run build
+pnpm --filter @showpass/kafka run build
+pnpm --filter @showpass/redis run build
+```
+
+Cada comando deve terminar sem erros de TypeScript.
+
+**2. Validar schemas Zod no terminal**
+
+Abra um REPL Node.js dentro do pacote de tipos:
+
+```bash
+cd packages/types
+node --input-type=module
+```
+
+Cole e pressione Enter:
+
+```javascript
+import { CreateEventSchema } from './dist/index.js';
+const result = CreateEventSchema.safeParse({
+  title: 'Rock in Rio 2025',
+  slug: 'rock-in-rio-2025',
+  description: 'O maior festival do Brasil',
+  categoryId: '018e1234-5678-7abc-def0-111213141516',
+  venueId: '018e1234-5678-7abc-def0-111213141517',
+  startsAt: new Date(Date.now() + 86400000).toISOString(),
+  endsAt: new Date(Date.now() + 172800000).toISOString(),
+  maxTicketsPerOrder: 4,
+  currency: 'BRL',
+});
+console.log(result.success ? 'OK ✓' : result.error.issues);
+```
+
+Resposta esperada: `OK ✓`
+
+**3. Testar rejeição de dados inválidos**
+
+```javascript
+const invalid = CreateEventSchema.safeParse({ title: '' });
+console.log(invalid.success); // false
+console.log(invalid.error.issues.map(i => i.message));
+```
+
+Você verá os erros de validação que o Zod retorna — os mesmos que os controllers vão enviar ao frontend.
+
+**4. Gerar os clients Prisma (pré-requisito para os próximos caps)**
+
+Antes de prosseguir para o Cap 03, garanta que os schemas Prisma compilam:
+
+```bash
+# Rode a partir da raiz do monorepo
+docker compose up -d  # PostgreSQL precisa estar rodando
+pnpm --filter event-service run db:generate
+pnpm --filter auth-service run db:generate
+pnpm --filter booking-service run db:generate
+pnpm --filter payment-service run db:generate
+```
+
+Se tudo correu bem, você verá a pasta `src/prisma/generated/` criada dentro de cada serviço.
+
+> **Por que isso importa:** os clients Prisma são gerados a partir do schema e **não** são versionados no Git. Cada desenvolvedor (e o runner CI) precisa gerar localmente. O Turborepo garante isso via `dependsOn: ["db:generate"]` na pipeline.
+
+---
+
 ## Recapitulando
 
 1. **`packages/types`** com Zod: tipos e validações compartilhados entre frontend e todos os serviços backend — uma única fonte de verdade

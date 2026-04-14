@@ -370,6 +370,126 @@ export class BookingSaga {
 
 ---
 
+## Testando na prática
+
+Este capítulo introduz padrões avançados que você pode verificar individualmente antes de integrá-los ao sistema completo.
+
+### Testando gRPC (Passo 18.1)
+
+**1. Instalar grpcurl**
+
+```bash
+# macOS
+brew install grpcurl
+
+# Linux
+curl -sSL https://github.com/fullstorydev/grpcurl/releases/download/v1.9.1/grpcurl_1.9.1_linux_x86_64.tar.gz | tar xz
+sudo mv grpcurl /usr/local/bin/
+```
+
+**2. Subir os serviços com gRPC habilitado**
+
+```bash
+pnpm --filter event-service run dev    # porta gRPC: 50051
+pnpm --filter booking-service run dev  # chama event-service via gRPC
+```
+
+**3. Listar serviços disponíveis via gRPC reflection**
+
+```bash
+grpcurl -plaintext localhost:50051 list
+```
+
+Saída esperada: `showpass.EventService`
+
+**4. Fazer uma chamada gRPC diretamente**
+
+```bash
+grpcurl -plaintext -d '{"eventId":"018e9999-...","organizerId":"018e1234-..."}' \
+  localhost:50051 showpass.EventService/GetEventWithSeats
+```
+
+Compare a latência com a mesma chamada via HTTP REST — o gRPC deve ser ~40% mais rápido em chamadas internas.
+
+### Testando CQRS (Passo 18.2)
+
+O CQRS separa reads de writes. Para verificar que as queries de leitura vão para a read replica:
+
+**1. Monitorar qual banco recebe cada query**
+
+```bash
+# Em um terminal — logs do primary
+docker compose logs -f postgres-primary | grep -v "checkpoint"
+
+# Em outro terminal — logs da replica
+docker compose logs -f postgres-replica | grep -v "checkpoint"
+```
+
+**2. Fazer uma query de leitura e uma de escrita**
+
+```bash
+# Leitura: buscar evento (deve aparecer só no log da replica)
+curl http://localhost:3004/reservations?eventId=$EVENT_ID \
+  -H "Authorization: Bearer $BUYER_TOKEN"
+
+# Escrita: criar reserva (deve aparecer só no log do primary)
+curl -X POST http://localhost:3004/reservations \
+  -H "Authorization: Bearer $BUYER_TOKEN" \
+  -d "{\"eventId\":\"$EVENT_ID\",\"seatIds\":[\"$SEAT_ID\"]}"
+```
+
+### Testando Circuit Breaker (Passo 18.3)
+
+**1. Derrubar o event-service para simular falha**
+
+```bash
+# Parar o event-service
+# Ctrl+C no terminal do event-service
+
+# Fazer 5 requests ao booking-service (que depende do event-service via gRPC)
+for i in {1..5}; do
+  curl -s -X POST http://localhost:3004/reservations \
+    -H "Authorization: Bearer $BUYER_TOKEN" \
+    -d "{\"eventId\":\"$EVENT_ID\",\"seatIds\":[\"$SEAT_ID\"]}" | jq .statusCode
+done
+```
+
+As primeiras retornam `503 Service Unavailable`. Após 5 falhas, o circuit breaker abre e as próximas retornam **imediatamente** (sem esperar timeout de rede) com a resposta do fallback.
+
+**2. Restaurar o event-service e ver o circuit fechar**
+
+```bash
+pnpm --filter event-service run dev
+```
+
+Após ~30 segundos (janela de half-open), o circuit breaker testa uma request. Se bem-sucedida, fecha o circuito e o sistema volta ao normal.
+
+### Testando o Saga Pattern (Passo 18.4)
+
+**1. Monitorar os eventos Kafka do saga**
+
+```bash
+# Em terminais separados, consumir cada tópico do saga
+docker compose exec kafka kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic reservation.created --from-beginning &
+
+docker compose exec kafka kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic payment.confirmed --from-beginning &
+
+docker compose exec kafka kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic ticket.issued --from-beginning &
+```
+
+**2. Executar o fluxo completo**
+
+Faça uma reserva → pagamento → verifique que os tópicos recebem os eventos na sequência correta.
+
+**3. Testar a compensação (rollback)**
+
+Interrompa o worker-service após o pagamento confirmado mas antes da emissão do ingresso. Verifique que o saga emite um evento de compensação `ticket.generation.failed` e que o status do pedido volta para o estado correto.
+
+---
+
 ## Resumo Final do Tutorial
 
 ```

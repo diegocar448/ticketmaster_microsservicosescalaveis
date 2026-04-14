@@ -366,6 +366,119 @@ k6 run --env EVENT_ID=xxx --env BATCH_ID=yyy infra/k6/seat-reservation.js
 
 ---
 
+## Testando na prática
+
+Este capítulo é sobre executar os testes. Você vai rodar cada suite e interpretar os resultados.
+
+### Pré-requisitos
+
+```bash
+docker compose up -d   # banco real para testes de integração
+pnpm install
+pnpm turbo run db:generate   # gerar clients Prisma
+```
+
+### Passo a passo
+
+**1. Rodar todos os testes**
+
+```bash
+pnpm turbo run test
+```
+
+O Turborepo executa em paralelo. Saída esperada:
+
+```
+booking-service:test: Tests: 23 passed, 0 failed
+auth-service:test:   Tests: 14 passed, 0 failed
+event-service:test:  Tests: 18 passed, 0 failed
+```
+
+**2. Rodar apenas testes unitários do SeatLockService**
+
+```bash
+pnpm --filter booking-service run test -- --testPathPattern="seat-lock"
+```
+
+Como o Redis é mockado, este teste roda sem Docker:
+
+```
+PASS src/modules/locks/__tests__/seat-lock.service.spec.ts
+  SeatLockService
+    ✓ deve adquirir lock com SETNX (5ms)
+    ✓ deve retornar false se assento já travado (3ms)
+    ✓ deve liberar todos os locks em caso de erro parcial (4ms)
+```
+
+**3. Rodar o teste de concorrência (o mais importante)**
+
+```bash
+pnpm --filter booking-service run test -- --testPathPattern="concurrency"
+```
+
+Este teste dispara 50 compradores simultâneos para o mesmo assento:
+
+```
+PASS src/modules/reservations/__tests__/concurrency.spec.ts
+  Race condition — 50 compradores simultâneos
+    ✓ apenas 1 comprador adquire o lock (127ms)
+    ✓ os outros 49 recebem 409 Conflict
+```
+
+Se você ver `2 compradores adquiriram o lock` — há um bug de race condition. Nunca deve acontecer com Redis SETNX.
+
+**4. Rodar testes E2E com Playwright**
+
+```bash
+# Precisa dos serviços rodando
+pnpm --filter auth-service run dev &
+pnpm --filter event-service run dev &
+pnpm --filter api-gateway run dev &
+pnpm --filter web run dev &
+
+# Rodar Playwright
+pnpm --filter web run test:e2e
+```
+
+O browser Chromium abre, faz login automaticamente, seleciona assentos e verifica o redirect para o checkout. Para ver o browser durante o teste:
+
+```bash
+pnpm --filter web run test:e2e -- --headed
+```
+
+**5. Rodar o load test com k6**
+
+```bash
+# Instalar k6 (se necessário)
+# macOS: brew install k6
+# Linux: sudo apt-get install k6
+
+# Subir todos os serviços primeiro
+k6 run tests/load/booking-load.js
+```
+
+Saída esperada ao final:
+
+```
+✓ status 200/409 (não 500)    100%
+✓ P95 < 500ms                   98%
+
+http_reqs: 10000
+http_req_duration p(95)=423ms
+```
+
+Se P95 > 500ms com apenas 1000 usuários, há um gargalo a investigar (normalmente no pool de conexões do Prisma ou no Redis).
+
+**6. Ver cobertura de testes**
+
+```bash
+pnpm --filter booking-service run test -- --coverage
+```
+
+Abra `apps/booking-service/coverage/index.html` no browser para ver quais linhas não têm cobertura.
+
+---
+
 ## Recapitulando
 
 1. **Jest unit tests** — mockar infraestrutura (Redis, Prisma); testar lógica de negócio isolada
