@@ -302,6 +302,108 @@ groups:
 
 ---
 
+## Testando na prática
+
+A stack de observabilidade (Prometheus, Loki, Tempo, Grafana) sobe via Docker Compose. Você vai ver traces distribuídos, métricas e logs correlacionados em tempo real.
+
+### O que precisa estar rodando
+
+```bash
+# Subir toda a infraestrutura incluindo a stack de observabilidade
+docker compose --profile observability up -d
+
+# Subir os serviços com OpenTelemetry habilitado
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
+pnpm --filter booking-service run dev
+```
+
+### Passo a passo
+
+**1. Acessar o Grafana**
+
+Abra: **http://localhost:3000** (Grafana, não o api-gateway)
+
+> Se o api-gateway também usa a porta 3000, o Grafana é configurado em 3100 no `docker-compose.yml`. Verifique a porta no arquivo.
+
+Login padrão: `admin` / `admin`
+
+**2. Verificar o Dashboard de Disponibilidade de Assentos**
+
+No menu lateral → Dashboards → "ShowPass — Disponibilidade de Assentos"
+
+Você deve ver em tempo real:
+- Taxa de conflitos de reserva (quantos 409 por minuto)
+- Latência de checkout P50/P95/P99
+- Locks Redis ativos
+
+**3. Fazer uma reserva e ver o trace**
+
+Execute uma reserva via curl (ou browser), depois no Grafana:
+
+Menu → Explore → Datasource: **Tempo**
+
+Cole o `traceId` do header `x-request-id` da resposta e pressione Enter.
+
+Você verá o trace completo:
+
+```
+POST /reservations (API Gateway) — 45ms
+  └─ POST /reservations (Booking Service) — 38ms
+       ├─ Redis SETNX seat:lock:... — 2ms
+       ├─ Redis SETNX seat:lock:... — 1ms
+       └─ Prisma INSERT reservations — 12ms
+```
+
+**4. Correlacionar trace com logs no Loki**
+
+No trace, clique em qualquer span e selecione "View Logs". O Grafana abre o Loki filtrado pelo `traceId` — você vê todos os logs daquela request específica de todos os serviços.
+
+**5. Consultar métricas no Prometheus**
+
+Menu → Explore → Datasource: **Prometheus**
+
+Query para ver conflitos de reserva:
+
+```promql
+rate(showpass_booking_conflicts_total[5m])
+```
+
+Query para latência P95:
+
+```promql
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{service="booking-service"}[5m]))
+```
+
+**6. Disparar um alerta**
+
+O alerta `BookingConflictRateHigh` dispara quando `> 10 conflitos/min`. Simulate:
+
+```bash
+# Disparar 15 tentativas de double booking em 1 minuto
+for i in {1..15}; do
+  curl -s -X POST http://localhost:3004/reservations \
+    -H "Authorization: Bearer $BUYER2_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{\"eventId\":\"$EVENT_ID\",\"seatIds\":[\"$SEAT_ID\"]}" > /dev/null
+done
+```
+
+No Grafana → Alerting, o alerta deve mudar para estado `Firing` em ~2 minutos (período de avaliação).
+
+**7. Ver logs estruturados no Loki**
+
+Menu → Explore → Datasource: **Loki**
+
+Query:
+
+```logql
+{service="booking-service"} | json | level="error"
+```
+
+Você vê apenas os erros, com campos estruturados parseados automaticamente.
+
+---
+
 ## Recapitulando
 
 1. **OpenTelemetry** instrumenta automaticamente HTTP, Prisma, Redis, Kafka com zero código de aplicação

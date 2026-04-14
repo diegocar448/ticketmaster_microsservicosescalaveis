@@ -735,6 +735,162 @@ Browser → POST /bookings/reservations
 
 ---
 
+## Testando na prática
+
+Este é o capítulo mais importante para testar: você vai ver o Redis SETNX em ação e verificar que dois compradores **não conseguem reservar o mesmo assento**.
+
+### O que precisa estar rodando
+
+```bash
+# Terminal 1 — infraestrutura
+docker compose up -d
+
+# Terminal 2 — auth-service
+pnpm --filter auth-service run dev          # porta 3006
+
+# Terminal 3 — event-service
+pnpm --filter event-service run dev         # porta 3003
+
+# Terminal 4 — booking-service
+pnpm --filter booking-service run db:generate
+pnpm --filter booking-service run db:migrate
+pnpm --filter booking-service run dev       # porta 3004
+```
+
+### Preparação — obter tokens e IDs
+
+```bash
+# Token de organizer (para criar o evento)
+ORGANIZER_TOKEN=$(curl -s -X POST http://localhost:3006/auth/organizers/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@rockshows.com.br","password":"Senha@Forte123"}' | jq -r .accessToken)
+
+# Token de comprador 1
+BUYER1_TOKEN=$(curl -s -X POST http://localhost:3006/auth/buyers/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"joao@email.com","password":"MinhaSenha@123"}' | jq -r .accessToken)
+
+# Token de comprador 2
+BUYER2_TOKEN=$(curl -s -X POST http://localhost:3006/auth/buyers/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"maria@email.com","password":"Pass@1234"}' | jq -r .accessToken)
+
+# Buscar ID de um assento disponível no evento
+SEAT_ID=$(curl -s "http://localhost:3003/events/rock-in-rio-2025/seats?status=available&limit=2" \
+  | jq -r '.seats[0].id')
+
+SEAT_ID2=$(curl -s "http://localhost:3003/events/rock-in-rio-2025/seats?status=available&limit=2" \
+  | jq -r '.seats[1].id')
+
+EVENT_ID=$(curl -s http://localhost:3003/events/rock-in-rio-2025 | jq -r .id)
+```
+
+### Passo a passo
+
+**1. Comprador 1 reserva assentos**
+
+```bash
+curl -s -X POST http://localhost:3004/reservations \
+  -H "Authorization: Bearer $BUYER1_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"eventId\": \"$EVENT_ID\",
+    \"seatIds\": [\"$SEAT_ID\", \"$SEAT_ID2\"]
+  }" | jq .
+```
+
+Resposta esperada:
+
+```json
+{
+  "reservationId": "018eaaaa-...",
+  "status": "pending",
+  "seats": [
+    { "id": "...", "row": "A", "number": 1 },
+    { "id": "...", "row": "A", "number": 2 }
+  ],
+  "expiresAt": "2025-01-01T00:15:00.000Z"
+}
+```
+
+Os assentos ficam **bloqueados por 15 minutos** no Redis.
+
+**2. Comprador 2 tenta reservar os mesmos assentos (double booking)**
+
+```bash
+curl -s -X POST http://localhost:3004/reservations \
+  -H "Authorization: Bearer $BUYER2_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"eventId\": \"$EVENT_ID\",
+    \"seatIds\": [\"$SEAT_ID\"]
+  }" | jq .
+```
+
+Resposta esperada: **`409 Conflict`**
+
+```json
+{
+  "statusCode": 409,
+  "message": "Assentos indisponíveis",
+  "unavailableSeats": ["018ebbbb-..."]
+}
+```
+
+> Esse é o resultado crítico do capítulo: Redis SETNX garantiu que apenas um comprador adquire o lock.
+
+**3. Verificar o lock no Redis**
+
+```bash
+docker compose exec redis redis-cli keys "seat:lock:*" | head -5
+```
+
+Você verá chaves como `seat:lock:<event-id>:<seat-id>` com TTL de ~900 segundos.
+
+```bash
+docker compose exec redis redis-cli ttl "seat:lock:<event-id>:<seat-id>"
+```
+
+**4. Simular expiração de reserva (opcional)**
+
+Defina o TTL do lock para 5 segundos e aguarde:
+
+```bash
+docker compose exec redis redis-cli expire "seat:lock:<event-id>:<seat-id>" 5
+sleep 6
+
+# Agora o comprador 2 consegue reservar
+curl -s -X POST http://localhost:3004/reservations \
+  -H "Authorization: Bearer $BUYER2_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"eventId\":\"$EVENT_ID\",\"seatIds\":[\"$SEAT_ID\"]}" | jq .status
+```
+
+Resposta esperada: `"pending"` — o assento estava livre após o TTL expirar.
+
+**5. Listar reservas do comprador**
+
+```bash
+curl -s http://localhost:3004/reservations \
+  -H "Authorization: Bearer $BUYER1_TOKEN" | jq .
+```
+
+**6. Cancelar uma reserva**
+
+```bash
+RESERVATION_ID="018eaaaa-..."  # id da reserva criada no passo 1
+curl -s -X DELETE http://localhost:3004/reservations/$RESERVATION_ID \
+  -H "Authorization: Bearer $BUYER1_TOKEN" | jq .
+```
+
+Após cancelar, verifique que as chaves Redis foram removidas:
+
+```bash
+docker compose exec redis redis-cli keys "seat:lock:*"
+```
+
+---
+
 ## Recapitulando
 
 1. **Redis SETNX** — operação atômica que elimina a race condition do double booking

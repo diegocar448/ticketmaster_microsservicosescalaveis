@@ -692,6 +692,131 @@ containers:
 
 ---
 
+## Testando na prática
+
+O worker-service não tem endpoints HTTP públicos — ele processa mensagens Kafka. O teste é feito observando os logs e verificando os artefatos gerados (ingressos no banco, PDF por email).
+
+### O que precisa estar rodando
+
+```bash
+# Terminal 1 — infraestrutura
+docker compose up -d
+
+# Terminal 2 — auth-service
+pnpm --filter auth-service run dev
+
+# Terminal 3 — event-service
+pnpm --filter event-service run dev
+
+# Terminal 4 — booking-service
+pnpm --filter booking-service run dev
+
+# Terminal 5 — payment-service
+pnpm --filter payment-service run dev
+
+# Terminal 6 — worker-service
+pnpm --filter worker-service run dev        # sem porta HTTP pública
+
+# Terminal 7 — Stripe CLI (para disparar o pagamento)
+stripe listen --forward-to http://localhost:3002/webhooks/stripe
+```
+
+### Passo a passo
+
+**1. Fluxo completo: reserva → pagamento → geração de ingressos**
+
+Execute os passos 1–4 do Cap 07 para criar uma reserva e simular um pagamento. Quando o Stripe webhook for processado, o payment-service emite `payment.confirmed` no Kafka.
+
+```bash
+# Simular pagamento confirmado (atalho sem browser)
+stripe trigger checkout.session.completed
+```
+
+**2. Observar o worker processar a mensagem**
+
+No terminal do worker-service, você verá:
+
+```
+[KafkaConsumer] Mensagem recebida: payment.confirmed — orderId: 018ecccc-...
+[TicketService] Gerando 2 ingressos para reserva 018eaaaa-...
+[PdfGenerator] PDF gerado — /tmp/ticket-018ecccc-001.pdf (124KB)
+[EmailService] Email enviado para joao@email.com
+[KafkaConsumer] Mensagem processada com sucesso
+```
+
+**3. Verificar ingressos criados no banco**
+
+```bash
+docker compose exec postgres psql -U showpass -d showpass_booking \
+  -c "SELECT id, seat_id, status, qr_code_hash FROM tickets WHERE order_id = '018ecccc-...' LIMIT 5;"
+```
+
+Você verá os ingressos com `status = 'issued'` e um hash único por ingresso.
+
+**4. Verificar o QR Code de um ingresso**
+
+```bash
+# Buscar hash do primeiro ingresso
+QR_HASH=$(docker compose exec -T postgres psql -U showpass -d showpass_booking \
+  -t -c "SELECT qr_code_hash FROM tickets LIMIT 1;" | tr -d ' ')
+
+# Simular validação no check-in
+curl -s -X POST http://localhost:3004/tickets/validate \
+  -H "Authorization: Bearer $ORGANIZER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"qrHash\": \"$QR_HASH\"}" | jq .
+```
+
+Resposta esperada:
+
+```json
+{
+  "valid": true,
+  "ticket": {
+    "seatRow": "A",
+    "seatNumber": 1,
+    "eventTitle": "Rock in Rio 2025",
+    "buyerName": "João Silva"
+  }
+}
+```
+
+**5. Testar a DLQ (Dead Letter Queue)**
+
+Simule uma falha forçando erro no processamento (temporariamente). Nos logs você verá:
+
+```
+[KafkaConsumer] Tentativa 1/3 falhou — retrying em 1s
+[KafkaConsumer] Tentativa 2/3 falhou — retrying em 2s
+[KafkaConsumer] Tentativa 3/3 falhou — enviando para DLQ payment.confirmed.dlq
+```
+
+Inspecione a DLQ no Kafka:
+
+```bash
+docker compose exec kafka kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic payment.confirmed.dlq \
+  --from-beginning \
+  --max-messages 1
+```
+
+**6. Monitorar Kafka em tempo real**
+
+Para ver todas as mensagens trafegando:
+
+```bash
+# Todas as mensagens do tópico payment.confirmed
+docker compose exec kafka kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic payment.confirmed \
+  --from-beginning
+```
+
+> **Dica:** Neste ponto, você já tem o backend completo funcionando end-to-end: auth → evento → reserva → pagamento → ingresso. O próximo capítulo adiciona o frontend Next.js para que o usuário interaja via browser.
+
+---
+
 ## Recapitulando
 
 1. **Processamento assíncrono** — webhook retorna 200 imediatamente; ingressos gerados em background sem risco de timeout

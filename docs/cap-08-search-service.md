@@ -690,6 +690,131 @@ export class SearchController {
 
 ---
 
+## Testando na prática
+
+O search-service indexa dados via Kafka (CDC com Debezium). Você pode testar a busca diretamente no Elasticsearch **e** pelo search-service HTTP.
+
+### O que precisa estar rodando
+
+```bash
+# Terminal 1 — infraestrutura completa (inclui Elasticsearch + Debezium)
+docker compose up -d
+
+# Aguardar Elasticsearch inicializar (~30s)
+curl -s http://localhost:9200/_cluster/health | jq .status
+# Aguardar retornar "yellow" ou "green"
+
+# Terminal 2 — auth-service
+pnpm --filter auth-service run dev
+
+# Terminal 3 — event-service
+pnpm --filter event-service run dev
+
+# Terminal 4 — search-service
+pnpm --filter search-service run dev        # porta 3005
+```
+
+O Debezium começa a capturar mudanças do PostgreSQL automaticamente após subir.
+
+### Passo a passo
+
+**1. Verificar que o Elasticsearch está operacional**
+
+```bash
+curl -s http://localhost:9200 | jq '{name, version: .version.number, status: .tagline}'
+```
+
+**2. Verificar que o índice `events` foi criado**
+
+```bash
+curl -s http://localhost:9200/events | jq '.events.mappings.properties | keys'
+```
+
+Você verá os campos: `title`, `description`, `venueCity`, `location`, `startsAt`, etc.
+
+**3. Busca por texto livre**
+
+```bash
+curl -s "http://localhost:3005/search?q=rock" | jq .
+```
+
+Resposta esperada:
+
+```json
+{
+  "total": 1,
+  "hits": [
+    {
+      "id": "018e9999-...",
+      "title": "Rock in Rio 2025",
+      "venueCity": "Rio de Janeiro",
+      "startsAt": "2025-09-26T18:00:00Z",
+      "status": "on_sale"
+    }
+  ]
+}
+```
+
+**4. Busca com typo (fuzziness)**
+
+```bash
+# "rok" → encontra "Rock" (1 caractere diferente)
+curl -s "http://localhost:3005/search?q=rok+in+rio" | jq '.total'
+```
+
+Resposta esperada: `1` — o analisador português com `fuzziness: AUTO` tolera erros de digitação.
+
+**5. Busca por cidade**
+
+```bash
+curl -s "http://localhost:3005/search?q=rock&city=Rio+de+Janeiro" | jq '.hits[0].venueCity'
+```
+
+**6. Busca geográfica por proximidade**
+
+```bash
+# Eventos em até 50km do Cristo Redentor (lat -22.951916, lon -43.210487)
+curl -s "http://localhost:3005/search?q=rock&lat=-22.951916&lon=-43.210487&radius=50km" | jq .
+```
+
+**7. Autocomplete (enquanto digita)**
+
+```bash
+curl -s "http://localhost:3005/search/autocomplete?q=ro" | jq .
+```
+
+Resposta esperada: sugestões como `["Rock in Rio 2025", "Rock Nacional..."]`.
+
+**8. Verificar CDC em tempo real**
+
+Crie um novo evento via event-service e veja aparecer na busca em ~2 segundos:
+
+```bash
+# Criar evento
+curl -s -X POST http://localhost:3003/events \
+  -H "Authorization: Bearer $ORGANIZER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"title\":\"Lollapalooza Brasil 2025\",\"slug\":\"lolla-2025\",\"description\":\"Festival\",\"categoryId\":\"$CATEGORY_ID\",\"venueId\":\"$VENUE_ID\",\"startsAt\":\"2025-03-28T18:00:00Z\",\"endsAt\":\"2025-03-30T23:00:00Z\",\"currency\":\"BRL\",\"maxTicketsPerOrder\":4}" | jq .id
+
+sleep 3
+
+# Buscar o novo evento
+curl -s "http://localhost:3005/search?q=lollapalooza" | jq '.total'
+```
+
+Resposta esperada: `1` — o Debezium capturou o INSERT no PostgreSQL, o Kafka consumer indexou no Elasticsearch.
+
+**9. Verificar conectores Debezium**
+
+```bash
+curl -s http://localhost:8083/connectors | jq .
+curl -s http://localhost:8083/connectors/events-connector/status | jq .connector.state
+```
+
+Estado esperado: `"RUNNING"`.
+
+---
+
 ## Recapitulando
 
 1. **CDC com Debezium** — captura mudanças do PostgreSQL em tempo real sem polling; busca sempre atualizada

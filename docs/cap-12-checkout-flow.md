@@ -222,6 +222,86 @@ export default async function CheckoutSuccessPage({
 
 ---
 
+## Testando na prática
+
+Este é o fluxo mais crítico do produto: selecionar assentos → pagar → confirmar. Você vai percorrer o checkout completo no browser.
+
+### O que precisa estar rodando
+
+Todos os serviços dos caps anteriores **mais** o payment-service e a Stripe CLI:
+
+```bash
+# Infraestrutura + todos os serviços
+docker compose up -d
+pnpm --filter auth-service run dev
+pnpm --filter event-service run dev
+pnpm --filter booking-service run dev
+pnpm --filter payment-service run dev
+pnpm --filter api-gateway run dev
+pnpm --filter web run dev
+
+# Stripe CLI (em outro terminal)
+stripe listen --forward-to http://localhost:3002/webhooks/stripe
+```
+
+### Passo a passo no browser
+
+**1. Fazer login como comprador**
+
+Acesse: **http://localhost:3001/login**
+
+Use: `joao@email.com` / `MinhaSenha@123`
+
+**2. Selecionar assentos e iniciar checkout**
+
+Acesse: **http://localhost:3001/events/rock-in-rio-2025**
+
+Selecione 2 assentos e clique em "Reservar". Você deve ser redirecionado para a página de checkout em `/checkout/[reservationId]`.
+
+**3. Verificar o timer regressivo**
+
+Na página de checkout, observe o timer de 15 minutos no canto superior. Ele exibe o tempo restante para completar o pagamento.
+
+**4. Clicar em "Pagar com Stripe"**
+
+Você será redirecionado para o Stripe Checkout (domínio `checkout.stripe.com`). Use o cartão de teste:
+
+| Campo | Valor |
+|---|---|
+| Número | `4242 4242 4242 4242` |
+| Validade | `12/26` |
+| CVC | `123` |
+
+**5. Verificar a página de sucesso**
+
+Após confirmar o pagamento, o Stripe redireciona para: **http://localhost:3001/checkout/success?session_id=cs_test_...**
+
+A página deve exibir:
+- Confirmação do pedido com os assentos
+- Mensagem de que os ingressos serão enviados por email
+- CTA para ver "Meus Ingressos" ou explorar mais eventos
+
+**6. Verificar que o assento foi bloqueado para outros**
+
+Em outra aba (ou sessão anônima), acesse o mesmo evento. Os assentos que você comprou devem aparecer como indisponíveis (vermelho ou cinza escuro).
+
+**7. Simular expiração da reserva**
+
+Acesse a página de checkout mas **não** pague. Aguarde o timer zerar (ou reduza o TTL do Redis manualmente — veja Cap 06). Quando expirar, a página deve redirecionar automaticamente para `/checkout/cancel` com mensagem de reserva expirada.
+
+**8. Testar pagamento recusado**
+
+Use o cartão de teste de recusa do Stripe:
+
+| Número | Comportamento |
+|---|---|
+| `4000 0000 0000 9995` | Fundos insuficientes |
+| `4000 0000 0000 0002` | Cartão recusado |
+
+O Stripe exibe a mensagem de erro na própria página de checkout. A reserva continua ativa até o TTL expirar.
+
+---
+
 ## Recapitulando
 
 1. **Stripe Checkout redirect** — segurança PCI máxima; página hospedada pelo Stripe

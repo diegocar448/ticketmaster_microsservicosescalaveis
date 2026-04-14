@@ -496,6 +496,80 @@ export function SeatMap({
 
 ---
 
+## Testando na prática
+
+Este capítulo traz a primeira tela visualmente rica: a página do evento com o mapa de assentos interativo.
+
+### O que precisa estar rodando
+
+```bash
+# Terminal 1 — infraestrutura
+docker compose up -d
+
+# Terminal 2 — auth-service
+pnpm --filter auth-service run dev          # porta 3006
+
+# Terminal 3 — event-service
+pnpm --filter event-service run dev         # porta 3003
+
+# Terminal 4 — booking-service
+pnpm --filter booking-service run dev       # porta 3004
+
+# Terminal 5 — api-gateway
+pnpm --filter api-gateway run dev           # porta 3000
+
+# Terminal 6 — frontend
+pnpm --filter web run dev                   # porta 3001
+```
+
+### Passo a passo no browser
+
+**1. Acessar a página do evento**
+
+Acesse: **http://localhost:3001/events/rock-in-rio-2025**
+
+Você deve ver:
+- Título, descrição e datas do evento
+- Mapa de assentos SVG com assentos coloridos por status
+- Botão "Selecionar assentos"
+
+Inspecione o código-fonte da página (Ctrl+U): os dados do evento estão no HTML (Server Component + SEO). O Google pode indexar esta página sem JavaScript.
+
+**2. Verificar os meta tags de SEO**
+
+No DevTools → Elements, procure no `<head>`:
+
+```html
+<title>Rock in Rio 2025 — ShowPass</title>
+<meta property="og:title" content="Rock in Rio 2025" />
+<meta property="og:image" content="..." />
+<script type="application/ld+json">{"@type":"Event",...}</script>
+```
+
+**3. Selecionar assentos no mapa**
+
+Clique em alguns assentos disponíveis (cor verde/cinza). Eles devem mudar de cor ao serem selecionados. O contador "X assentos selecionados" deve atualizar.
+
+**4. Testar o limite de ingressos por pedido**
+
+Tente selecionar mais de 4 assentos (limite definido no evento). O 5º clique deve ser ignorado ou exibir um tooltip de aviso.
+
+**5. Verificar sincronização em tempo real**
+
+Abra a mesma página em duas abas diferentes (simula dois compradores). Selecione um assento na Aba 1 — em ~1 segundo o mesmo assento deve aparecer laranja na Aba 2 (WebSocket) ou em até 10 segundos (fallback de polling).
+
+**6. Verificar estado otimista**
+
+Clique em um assento e observe que ele muda de cor instantaneamente antes da resposta do servidor. Se o servidor retornar erro (ex: assento já reservado por outro usuário), o assento volta ao estado anterior.
+
+**7. Testar com evento inexistente**
+
+Acesse: **http://localhost:3001/events/nao-existe**
+
+Você deve ver a página 404 com CTA para voltar à home.
+
+---
+
 ## Recapitulando
 
 1. **Server Component** para a página — SEO completo (Schema.org Event, Open Graph) no HTML inicial

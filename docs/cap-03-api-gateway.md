@@ -935,6 +935,89 @@ Cloudflare Waiting Room vs. Implementação própria:
 
 ---
 
+## Testando na prática
+
+O API Gateway em si não tem lógica de negócio — ele valida JWT e faz proxy. Os testes mais interessantes ficam no Cap 04 (auth) e Cap 05 (eventos). Mas você já pode verificar o health check e o comportamento de rejeição de requests.
+
+### O que precisa estar rodando
+
+```bash
+docker compose up -d
+pnpm --filter api-gateway run dev
+```
+
+O gateway sobe na porta **3000**.
+
+### Passo a passo
+
+**1. Health check — liveness**
+
+```bash
+curl http://localhost:3000/health/live
+```
+
+Resposta esperada:
+
+```json
+{ "status": "ok" }
+```
+
+**2. Health check — readiness**
+
+```bash
+curl http://localhost:3000/health/ready
+```
+
+Resposta esperada:
+
+```json
+{ "status": "ok", "services": { "redis": "ok" } }
+```
+
+Se Redis não estiver rodando, você verá `"redis": "degraded"`.
+
+**3. Verificar rejeição de request sem token**
+
+```bash
+curl -i http://localhost:3000/events
+```
+
+Resposta esperada:
+
+```http
+HTTP/1.1 401 Unauthorized
+{"statusCode":401,"message":"Token não fornecido","timestamp":"...","requestId":"..."}
+```
+
+Observe o campo `requestId` — ele é gerado pelo `RequestIdInterceptor` e aparece em todos os erros.
+
+**4. Verificar rate limiting**
+
+Execute este loop para disparar mais de 5 requests de autenticação em sequência:
+
+```bash
+for i in {1..6}; do
+  curl -s -o /dev/null -w "%{http_code}\n" \
+    -X POST http://localhost:3000/auth/buyers/login \
+    -H "Content-Type: application/json" \
+    -d '{"email":"x@x.com","password":"errado"}';
+done
+```
+
+Os primeiros retornam `401` (credenciais erradas). Na 6ª request (limite é 5/min), você verá `429 Too Many Requests`.
+
+> **Nota:** o rate limit de auth (5 req/min) é mais restritivo que o global (300 req/min). Se quiser testar o global, use endpoints diferentes em sequência rápida.
+
+**5. Verificar header `x-request-id` na resposta**
+
+```bash
+curl -I http://localhost:3000/health/live
+```
+
+Procure o header `x-request-id` na resposta. Ele é gerado pelo gateway e propagado para todos os serviços downstream — usado para rastreamento nos logs do Loki/Grafana.
+
+---
+
 ## Recapitulando
 
 1. **JWT validado uma vez** no Gateway — RS256 com chave pública; serviços internos confiam nos headers `x-user-id` / `x-organizer-id`

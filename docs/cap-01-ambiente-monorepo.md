@@ -969,6 +969,81 @@ feat/cap04-auth-service:
 
 ---
 
+## Testando na prática
+
+Neste capítulo não há serviços HTTP ainda — mas você pode verificar que toda a infraestrutura sobe corretamente.
+
+### O que precisa estar rodando
+
+Apenas o Docker Compose.
+
+### Passo a passo
+
+**1. Subir os containers de infraestrutura**
+
+```bash
+docker compose up -d
+```
+
+Aguarde ~30 segundos para PostgreSQL, Redis, Kafka e Elasticsearch inicializarem.
+
+**2. Verificar que todos os containers subiram**
+
+```bash
+docker compose ps
+```
+
+Todos devem estar com status `Up` ou `healthy`. Se algum estiver `Exit`, veja os logs:
+
+```bash
+docker compose logs <nome-do-container>
+```
+
+**3. Testar conectividade com PostgreSQL**
+
+```bash
+docker compose exec postgres psql -U showpass -d showpass_auth -c "\l"
+```
+
+Você deve ver os bancos `showpass_auth`, `showpass_events`, `showpass_booking` e `showpass_payment` listados.
+
+**4. Testar conectividade com Redis**
+
+```bash
+docker compose exec redis redis-cli ping
+```
+
+Resposta esperada: `PONG`
+
+**5. Verificar que o Kafka está pronto**
+
+```bash
+docker compose exec kafka kafka-topics.sh --bootstrap-server localhost:9092 --list
+```
+
+Sem erros = Kafka operacional. A lista pode estar vazia neste ponto (os tópicos são criados pelos serviços).
+
+**6. Verificar build do monorepo**
+
+```bash
+pnpm install
+pnpm turbo run build
+```
+
+Resultado esperado: todos os pacotes compilam sem erro. O Turborepo exibe o tempo de cada task.
+
+**7. Verificar lint**
+
+```bash
+pnpm turbo run lint
+```
+
+Zero erros = ambiente configurado corretamente.
+
+> **Dica:** Se o `docker compose up` falhar com conflito de porta (ex: porta 5432 já ocupada pelo PostgreSQL local), pare o serviço local antes: `sudo systemctl stop postgresql` no Linux ou pare pelo `brew services` no macOS.
+
+---
+
 ## Recapitulando
 
 Neste capítulo você configurou:
