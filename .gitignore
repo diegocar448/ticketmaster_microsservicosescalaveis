@@ -8,9 +8,9 @@ dist/
 build/
 *.tsbuildinfo
 
-# Gerado pelo Prisma
-prisma/generated/
-src/prisma/generated/
+# Gerado pelo Prisma — ** para ignorar em qualquer subdiretório (apps/*/prisma/generated)
+**/prisma/generated/
+**/src/prisma/generated/
 
 # Chaves privadas — NUNCA commitar
 apps/auth-service/keys/private.pem

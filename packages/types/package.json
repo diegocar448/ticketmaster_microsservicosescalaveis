@@ -9,9 +9,19 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
+    "@nestjs/common": "^11.0.0",
     "zod": "^4.0.0"
   },
+  "peerDependencies": {
+    "@types/express": "^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@types/express": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.8.0"
   }

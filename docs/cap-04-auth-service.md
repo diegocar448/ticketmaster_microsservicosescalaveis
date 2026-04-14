@@ -32,6 +32,9 @@ RS256 (assimétrico):
 ## Passo 4.1 — Gerar par de chaves RSA
 
 ```bash
+# Criar diretório de chaves
+mkdir -p apps/auth-service/keys packages/types/keys
+
 # Gerar chave privada RSA 4096-bit (auth-service guarda)
 openssl genrsa -out apps/auth-service/keys/private.pem 4096
 
@@ -39,14 +42,17 @@ openssl genrsa -out apps/auth-service/keys/private.pem 4096
 openssl rsa -in apps/auth-service/keys/private.pem \
             -pubout \
             -out packages/types/keys/public.pem
-
-# Nunca commitar a chave privada — adicionar ao .gitignore
-echo "apps/auth-service/keys/private.pem" >> .gitignore
 ```
+
+> O `.gitignore` já contém `**/*.pem` que ignora ambas as chaves automaticamente.
+> Nunca commitar chaves RSA — em produção, injetar via secrets do K8s.
 
 ---
 
 ## Passo 4.2 — Schema Prisma do Auth Service
+
+> **Prisma 7:** A propriedade `url` foi removida do bloco `datasource`.
+> A URL de conexão agora vai em `prisma.config.ts` (ver abaixo).
 
 ```prisma
 // apps/auth-service/prisma/schema.prisma
@@ -56,13 +62,71 @@ generator client {
   output   = "../src/prisma/generated"
 }
 
+// Prisma 7: datasource sem url — configurado em prisma.config.ts
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
-// Refresh tokens — armazenados no banco para permitir revogação
-// Quando o usuário faz logout, o token é invalidado aqui
+// ─── Planos de organizer ───────────────────────────────────────────────────────
+
+model Plan {
+  id         String      @id @default(uuid()) @db.Uuid
+  slug       String      @unique
+  name       String
+  organizers Organizer[]
+  createdAt  DateTime    @default(now())
+
+  @@map("plans")
+}
+
+// ─── Organizer (empresa/produtor de eventos) ──────────────────────────────────
+
+model Organizer {
+  id          String          @id @default(uuid()) @db.Uuid
+  name        String
+  slug        String          @unique
+  planId      String          @db.Uuid
+  plan        Plan            @relation(fields: [planId], references: [id])
+  trialEndsAt DateTime?
+  users       OrganizerUser[]
+  createdAt   DateTime        @default(now())
+
+  @@map("organizers")
+}
+
+// ─── Usuário de organizer (admin/staff da empresa) ────────────────────────────
+
+model OrganizerUser {
+  id           String    @id @default(uuid()) @db.Uuid
+  organizerId  String    @db.Uuid
+  organizer    Organizer @relation(fields: [organizerId], references: [id])
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         String    @default("member")
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@map("organizer_users")
+}
+
+// ─── Comprador (usuário final que compra ingressos) ───────────────────────────
+
+model Buyer {
+  id           String    @id @default(uuid()) @db.Uuid
+  email        String    @unique
+  name         String?
+  passwordHash String
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@map("buyers")
+}
+
+// ─── Refresh tokens ───────────────────────────────────────────────────────────
+// Armazenados para permitir revogação explícita (logout, theft detection).
+// Nunca armazenar o token em texto plano — apenas SHA-256(token).
+
 model RefreshToken {
   id String @id @default(uuid()) @db.Uuid
 
@@ -86,17 +150,64 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
-// Email verification tokens
+// ─── Email verification tokens ────────────────────────────────────────────────
+
 model EmailVerification {
-  id           String   @id @default(uuid()) @db.Uuid
-  userId       String   @db.Uuid
-  userType     String   // "organizer_user" | "buyer"
-  tokenHash    String   @unique
-  expiresAt    DateTime
-  verifiedAt   DateTime?
-  createdAt    DateTime @default(now())
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  userType   String    // "organizer_user" | "buyer"
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  verifiedAt DateTime?
+  createdAt  DateTime  @default(now())
 
   @@map("email_verifications")
+}
+```
+
+### Prisma 7 — `prisma.config.ts`
+
+```typescript
+// apps/auth-service/prisma.config.ts
+// Prisma 7 separou a URL do schema para suportar múltiplos adapters.
+
+import { defineConfig } from 'prisma/config';
+
+export default defineConfig({
+  datasourceUrl: process.env['DATABASE_URL'],
+  earlyAccess: true,
+  schema: 'prisma/schema.prisma',
+});
+```
+
+### Gerar o cliente Prisma
+
+```bash
+cd apps/auth-service
+npx prisma generate
+```
+
+> O cliente é gerado em `src/prisma/generated/` — já ignorado pelo `.gitignore`.
+
+---
+
+## Passo 4.2b — PrismaService
+
+```typescript
+// apps/auth-service/src/prisma/prisma.service.ts
+
+import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { PrismaClient } from './generated/index.js';
+
+@Injectable()
+export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+  async onModuleInit(): Promise<void> {
+    await this.$connect();
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.$disconnect();
+  }
 }
 ```
 
@@ -114,8 +225,8 @@ model EmailVerification {
 import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 export interface JwtPayload {
   sub: string;           // user ID
@@ -129,12 +240,13 @@ export interface JwtPayload {
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor() {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- caminho fixo, não vem de input do usuário
+    const publicKey = readFileSync(join(__dirname, '../../../../keys/public.pem'));
+
     super({
-      // Extrair token do header Authorization: Bearer <token>
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      // Chave pública para verificar assinatura RS256
-      secretOrKey: readFileSync(join(__dirname, '../../../../keys/public.pem')),
+      secretOrKey: publicKey,
       algorithms: ['RS256'],
       audience: 'showpass-api',
       issuer: 'showpass-auth',
@@ -142,11 +254,12 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   }
 
   validate(payload: JwtPayload): JwtPayload {
-    // O que retornar aqui é injetado em req.user
     return payload;
   }
 }
 ```
+
+> **Nota:** Com `module: "NodeNext"` e `package.json` sem `"type": "module"`, os arquivos `.ts` compilam para CommonJS. O `__dirname` está disponível como global — não usar `import.meta.url`.
 
 ---
 
@@ -154,16 +267,12 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
 
 ```typescript
 // apps/auth-service/src/modules/auth/token.service.ts
-//
-// Responsável pela emissão e validação de tokens.
-// Access Token: 15 minutos — curto para limitar janela de comprometimento
-// Refresh Token: 30 dias — armazenado como hash no banco + httpOnly cookie
 
 import { Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { PrismaService } from '../../prisma/prisma.service';
-import { createHash, randomBytes } from 'crypto';
-import type { JwtPayload } from './strategies/jwt.strategy';
+import { PrismaService } from '../../prisma/prisma.service.js';
+import { createHash, randomBytes } from 'node:crypto';
+import type { JwtPayload } from './strategies/jwt.strategy.js';
 
 export interface TokenPair {
   accessToken: string;
@@ -187,22 +296,22 @@ export class TokenService {
     private readonly prisma: PrismaService,
   ) {}
 
-  /**
-   * Emite um par de tokens para o usuário autenticado.
-   * Access token: JWT RS256, 15 minutos
-   * Refresh token: bytes aleatórios, 30 dias, armazenado como hash
-   */
   async issueTokenPair(
     ctx: AuthContext,
-    meta: { userAgent?: string; ipAddress?: string },
+    // exactOptionalPropertyTypes: aceitar undefined explícito de req.headers
+    meta: { userAgent?: string | undefined; ipAddress?: string | undefined },
   ): Promise<TokenPair> {
     // ─── 1. Access Token (JWT, curto) ─────────────────────────────────────────
+    // exactOptionalPropertyTypes: omitir organizerId quando undefined
     const payload: Omit<JwtPayload, 'iat' | 'exp'> = {
       sub: ctx.userId,
       email: ctx.email,
       type: ctx.type,
-      organizerId: ctx.organizerId,
     };
+
+    if (ctx.organizerId !== undefined) {
+      payload.organizerId = ctx.organizerId;
+    }
 
     const accessToken = this.jwtService.sign(payload, {
       expiresIn: '15m',
@@ -210,21 +319,18 @@ export class TokenService {
     });
 
     // ─── 2. Refresh Token (opaque, longo) ─────────────────────────────────────
-    // 256 bits de entropia — impossível de adivinhar
     const rawRefreshToken = randomBytes(32).toString('hex');
-
-    // Armazenar apenas o hash — se o banco vazar, tokens são inúteis
     const tokenHash = createHash('sha256').update(rawRefreshToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 dias
-
+    // Prisma espera null (não undefined) para campos opcionais nullable
     await this.prisma.refreshToken.create({
       data: {
         tokenableId: ctx.userId,
         tokenableType: ctx.type === 'organizer' ? 'organizer_user' : 'buyer',
         tokenHash,
-        userAgent: meta.userAgent,
-        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent ?? null,
+        ipAddress: meta.ipAddress ?? null,
         expiresAt,
       },
     });
@@ -232,22 +338,17 @@ export class TokenService {
     return {
       accessToken,
       refreshToken: rawRefreshToken,
-      expiresIn: 15 * 60,  // segundos
+      expiresIn: 15 * 60,
     };
   }
 
   /**
-   * Refresh Token Rotation:
-   * Troca o refresh token antigo por um novo par.
-   *
-   * Rotation garante que:
-   * 1. Se um token for roubado e usado, o token legítimo para de funcionar
-   * 2. O sistema detecta o reuso e revoga TODOS os tokens do usuário
-   * (padrão usado pelo Google, Netflix, Meta)
+   * Refresh Token Rotation — padrão Google/Meta.
+   * Reuso detectado → revogar TODOS os tokens (theft detection).
    */
   async rotate(
     rawRefreshToken: string,
-    meta: { userAgent?: string; ipAddress?: string },
+    meta: { userAgent?: string | undefined; ipAddress?: string | undefined },
   ): Promise<TokenPair | null> {
     const tokenHash = createHash('sha256').update(rawRefreshToken).digest('hex');
 
@@ -256,18 +357,15 @@ export class TokenService {
     });
 
     if (!storedToken) {
-      this.logger.warn('Refresh token não encontrado', { tokenHash: tokenHash.substring(0, 8) });
+      this.logger.warn(`Refresh token não encontrado: ${tokenHash.substring(0, 8)}`);
       return null;
     }
 
-    // ─── Detectar reuso (token theft detection) ────────────────────────────────
     if (storedToken.revokedAt) {
-      this.logger.error('ALERTA: Refresh token reutilizado — possível roubo!', {
-        userId: storedToken.tokenableId,
-        tokenHash: tokenHash.substring(0, 8),
-      });
+      this.logger.error(
+        `ALERTA: Refresh token reutilizado — possível roubo! userId=${storedToken.tokenableId}`,
+      );
 
-      // Revogar TODOS os tokens do usuário — forçar novo login
       await this.prisma.refreshToken.updateMany({
         where: {
           tokenableId: storedToken.tokenableId,
@@ -285,42 +383,31 @@ export class TokenService {
       return null;
     }
 
-    // ─── Revogar token atual (rotation) ───────────────────────────────────────
     await this.prisma.refreshToken.update({
       where: { id: storedToken.id },
-      data: {
-        revokedAt: new Date(),
-        lastUsedAt: new Date(),
-      },
+      data: { revokedAt: new Date(), lastUsedAt: new Date() },
     });
 
-    // Determinar o tipo de usuário e reconstruir o contexto
-    const type = storedToken.tokenableType === 'organizer_user' ? 'organizer' : 'buyer';
+    const type: 'organizer' | 'buyer' =
+      storedToken.tokenableType === 'organizer_user' ? 'organizer' : 'buyer';
 
-    // Buscar informações do usuário para reemitir o token
-    // (organizerId pode ter mudado — sempre buscar do banco)
-    const userCtx = await this.getUserContext(storedToken.tokenableId, type);
-    if (!userCtx) return null;
+    const userCtx: AuthContext = {
+      userId: storedToken.tokenableId,
+      email: '',  // preenchido via join com OrganizerUser/Buyer em Cap 5
+      type,
+    };
 
-    // ─── Emitir novo par ───────────────────────────────────────────────────────
     return this.issueTokenPair(userCtx, meta);
   }
 
-  /**
-   * Revoga um refresh token específico (logout de um dispositivo).
-   */
   async revoke(rawRefreshToken: string): Promise<void> {
     const tokenHash = createHash('sha256').update(rawRefreshToken).digest('hex');
-
     await this.prisma.refreshToken.updateMany({
       where: { tokenHash },
       data: { revokedAt: new Date() },
     });
   }
 
-  /**
-   * Revoga todos os refresh tokens do usuário (logout de todos os dispositivos).
-   */
   async revokeAll(userId: string, type: 'organizer' | 'buyer'): Promise<void> {
     await this.prisma.refreshToken.updateMany({
       where: {
@@ -330,15 +417,6 @@ export class TokenService {
       },
       data: { revokedAt: new Date() },
     });
-  }
-
-  private async getUserContext(
-    userId: string,
-    type: 'organizer' | 'buyer',
-  ): Promise<AuthContext | null> {
-    // Implementado no AuthService — injetado via DI para evitar ciclo
-    // Retornado como interface para não criar dependência circular
-    return null;  // Implementação no AuthService
   }
 }
 ```
@@ -356,14 +434,12 @@ import {
   ConflictException,
   Logger,
 } from '@nestjs/common';
-import * as bcrypt from 'bcrypt';
-import { PrismaService } from '../../prisma/prisma.service';
-import { TokenService } from './token.service';
-import type { TokenPair } from './token.service';
+import bcrypt from 'bcrypt';  // default import com esModuleInterop: true
+import { PrismaService } from '../../prisma/prisma.service.js';
+import { TokenService } from './token.service.js';
+import type { TokenPair } from './token.service.js';
 
-// OWASP A02: custo 12 — ~300ms em hardware moderno
-// Equilibrio entre segurança e performance (não bloquear event loop)
-const BCRYPT_ROUNDS = 12;
+const BCRYPT_ROUNDS = 12;  // OWASP A02: ~300ms em hardware moderno
 
 export interface RegisterOrganizerDto {
   name: string;
@@ -382,33 +458,26 @@ export class OrganizerAuthService {
   ) {}
 
   async register(dto: RegisterOrganizerDto): Promise<TokenPair> {
-    // Verificar se email já existe
     const existing = await this.prisma.organizerUser.findUnique({
       where: { email: dto.email },
     });
 
     if (existing) {
-      // OWASP A07: não revelar se o email existe ou não
-      // Mas aqui estamos no endpoint de registro — revelar conflito é aceitável
       throw new ConflictException('Este e-mail já está em uso');
     }
 
-    // Hash da senha com bcrypt
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
 
-    // Buscar plano gratuito para novos organizadores
     const freePlan = await this.prisma.plan.findUniqueOrThrow({
       where: { slug: 'free' },
     });
 
-    // Criar organizer + user em transação atômica
     const user = await this.prisma.$transaction(async (tx) => {
       const organizer = await tx.organizer.create({
         data: {
           name: dto.organizationName,
           slug: this.slugify(dto.organizationName),
           planId: freePlan.id,
-          // Trial de 14 dias no plano Pro
           trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
         },
       });
@@ -424,15 +493,10 @@ export class OrganizerAuthService {
       });
     });
 
-    this.logger.log('Novo organizer registrado', { userId: user.id });
+    this.logger.log(`Novo organizer registrado: userId=${user.id}`);
 
     return this.tokenService.issueTokenPair(
-      {
-        userId: user.id,
-        email: user.email,
-        type: 'organizer',
-        organizerId: user.organizerId,
-      },
+      { userId: user.id, email: user.email, type: 'organizer', organizerId: user.organizerId },
       {},
     );
   }
@@ -440,20 +504,16 @@ export class OrganizerAuthService {
   async login(
     email: string,
     password: string,
-    meta: { userAgent?: string; ipAddress?: string },
+    meta: { userAgent?: string | undefined; ipAddress?: string | undefined },
   ): Promise<TokenPair> {
-    const user = await this.prisma.organizerUser.findUnique({
-      where: { email },
-    });
+    const user = await this.prisma.organizerUser.findUnique({ where: { email } });
 
-    // OWASP A07: tempo constante — não revelar se email existe
-    // Mesmo que não encontre o usuário, executar o compare para
-    // gastar o mesmo tempo (previne timing attack)
+    // OWASP A07: timing constante — não revelar se email existe
     const passwordToCompare = user?.passwordHash ?? '$2b$12$invalidhashfortimingreason';
     const isValid = await bcrypt.compare(password, passwordToCompare);
 
     if (!user || !isValid) {
-      this.logger.warn('Tentativa de login falhou', { email, ip: meta.ipAddress });
+      this.logger.warn(`Tentativa de login falhou: email=${email}, ip=${meta.ipAddress ?? ''}`);
       throw new UnauthorizedException('E-mail ou senha incorretos');
     }
 
@@ -463,12 +523,7 @@ export class OrganizerAuthService {
     });
 
     return this.tokenService.issueTokenPair(
-      {
-        userId: user.id,
-        email: user.email,
-        type: 'organizer',
-        organizerId: user.organizerId,
-      },
+      { userId: user.id, email: user.email, type: 'organizer', organizerId: user.organizerId },
       meta,
     );
   }
@@ -480,6 +535,67 @@ export class OrganizerAuthService {
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '');
+  }
+}
+```
+
+### BuyerAuthService
+
+```typescript
+// apps/auth-service/src/modules/auth/buyer-auth.service.ts
+
+import { Injectable, UnauthorizedException, ConflictException, Logger } from '@nestjs/common';
+import bcrypt from 'bcrypt';
+import { PrismaService } from '../../prisma/prisma.service.js';
+import { TokenService } from './token.service.js';
+import type { TokenPair } from './token.service.js';
+
+const BCRYPT_ROUNDS = 12;
+
+export interface RegisterBuyerDto {
+  email: string;
+  password: string;
+  name?: string;
+}
+
+@Injectable()
+export class BuyerAuthService {
+  private readonly logger = new Logger(BuyerAuthService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tokenService: TokenService,
+  ) {}
+
+  async register(dto: RegisterBuyerDto): Promise<TokenPair> {
+    const existing = await this.prisma.buyer.findUnique({ where: { email: dto.email } });
+    if (existing) throw new ConflictException('Este e-mail já está em uso');
+
+    const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
+    const buyer = await this.prisma.buyer.create({
+      data: { email: dto.email, name: dto.name ?? null, passwordHash },
+    });
+
+    return this.tokenService.issueTokenPair({ userId: buyer.id, email: buyer.email, type: 'buyer' }, {});
+  }
+
+  async login(
+    email: string,
+    password: string,
+    meta: { userAgent?: string | undefined; ipAddress?: string | undefined },
+  ): Promise<TokenPair> {
+    const buyer = await this.prisma.buyer.findUnique({ where: { email } });
+
+    const passwordToCompare = buyer?.passwordHash ?? '$2b$12$invalidhashfortimingreason';
+    const isValid = await bcrypt.compare(password, passwordToCompare);
+
+    if (!buyer || !isValid) {
+      this.logger.warn(`Login de buyer falhou: email=${email}`);
+      throw new UnauthorizedException('E-mail ou senha incorretos');
+    }
+
+    await this.prisma.buyer.update({ where: { id: buyer.id }, data: { lastLoginAt: new Date() } });
+    return this.tokenService.issueTokenPair({ userId: buyer.id, email: buyer.email, type: 'buyer' }, meta);
   }
 }
 ```
@@ -502,7 +618,7 @@ import {
   UnauthorizedException,
   ForbiddenException,
 } from '@nestjs/common';
-import { Request } from 'express';
+import type { Request } from 'express';
 
 @Injectable()
 export class OrganizerGuard implements CanActivate {
@@ -513,17 +629,9 @@ export class OrganizerGuard implements CanActivate {
     const userType = request.headers['x-user-type'];
     const organizerId = request.headers['x-organizer-id'];
 
-    if (!userId) {
-      throw new UnauthorizedException('Não autenticado');
-    }
-
-    if (userType !== 'organizer') {
-      throw new ForbiddenException('Acesso exclusivo para organizadores');
-    }
-
-    if (!organizerId) {
-      throw new ForbiddenException('Organizador não associado ao usuário');
-    }
+    if (!userId) throw new UnauthorizedException('Não autenticado');
+    if (userType !== 'organizer') throw new ForbiddenException('Acesso exclusivo para organizadores');
+    if (!organizerId) throw new ForbiddenException('Organizador não associado ao usuário');
 
     return true;
   }
@@ -540,7 +648,7 @@ import {
   UnauthorizedException,
   ForbiddenException,
 } from '@nestjs/common';
-import { Request } from 'express';
+import type { Request } from 'express';
 
 @Injectable()
 export class BuyerGuard implements CanActivate {
@@ -550,13 +658,8 @@ export class BuyerGuard implements CanActivate {
     const userId = request.headers['x-user-id'];
     const userType = request.headers['x-user-type'];
 
-    if (!userId) {
-      throw new UnauthorizedException('Não autenticado');
-    }
-
-    if (userType !== 'buyer') {
-      throw new ForbiddenException('Acesso exclusivo para compradores');
-    }
+    if (!userId) throw new UnauthorizedException('Não autenticado');
+    if (userType !== 'buyer') throw new ForbiddenException('Acesso exclusivo para compradores');
 
     return true;
   }
@@ -569,17 +672,9 @@ export class BuyerGuard implements CanActivate {
 
 ```typescript
 // packages/types/src/decorators/current-user.decorator.ts
-//
-// Extrai o usuário autenticado do contexto da request.
-// Elimina o boilerplate de acessar headers manualmente em cada controller.
-//
-// Uso:
-//   @Get('profile')
-//   @UseGuards(OrganizerGuard)
-//   getProfile(@CurrentUser() user: AuthenticatedUser) { ... }
 
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
-import { Request } from 'express';
+import type { Request } from 'express';
 
 export interface AuthenticatedUser {
   id: string;
@@ -592,15 +687,27 @@ export const CurrentUser = createParamDecorator(
   (_data: unknown, ctx: ExecutionContext): AuthenticatedUser => {
     const request = ctx.switchToHttp().getRequest<Request>();
 
-    return {
+    // exactOptionalPropertyTypes: omitir organizerId se ausente em vez de passar undefined
+    const organizerId = request.headers['x-organizer-id'] as string | undefined;
+    const user: AuthenticatedUser = {
       id: request.headers['x-user-id'] as string,
       email: request.headers['x-user-email'] as string,
       type: request.headers['x-user-type'] as 'organizer' | 'buyer',
-      organizerId: request.headers['x-organizer-id'] as string | undefined,
     };
+
+    if (organizerId) {
+      user.organizerId = organizerId;
+    }
+
+    return user;
   },
 );
 ```
+
+> Exportar em `packages/types/src/index.ts`:
+> ```typescript
+> export * from './decorators/current-user.decorator.js';
+> ```
 
 ---
 
@@ -610,33 +717,25 @@ export const CurrentUser = createParamDecorator(
 // apps/auth-service/src/modules/auth/auth.controller.ts
 
 import {
-  Body,
-  Controller,
-  HttpCode,
-  HttpStatus,
-  Post,
-  Req,
-  Res,
-  UseGuards,
+  Body, Controller, HttpCode, HttpStatus, Post, Req, Res, UseGuards,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { Request, Response } from 'express';
-import { OrganizerAuthService } from './organizer-auth.service';
-import { BuyerAuthService } from './buyer-auth.service';
-import { TokenService } from './token.service';
-import { OrganizerGuard } from '../../common/guards/organizer.guard';
+import type { Request, Response } from 'express';
+import { OrganizerAuthService } from './organizer-auth.service.js';
+import { BuyerAuthService } from './buyer-auth.service.js';
+import { TokenService } from './token.service.js';
+import { OrganizerGuard } from '../../common/guards/organizer.guard.js';
 import { CurrentUser, type AuthenticatedUser } from '@showpass/types';
-
-// ─── DTOs com Zod Pipe ────────────────────────────────────────────────────────
-// (ZodValidationPipe converte o Zod schema em um NestJS pipe)
-import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { z } from 'zod';
 
+// Zod 4: z.email() top-level (não z.string().email() — deprecated)
 const LoginSchema = z.object({
-  email: z.string().email(),
-  // Mínimo 8 chars: maiúscula + minúscula + número — OWASP A07
+  email: z.email(),
   password: z.string().min(8).regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/),
 });
+
+type LoginDto = z.infer<typeof LoginSchema>;
 
 @Controller('auth')
 export class AuthController {
@@ -646,66 +745,46 @@ export class AuthController {
     private readonly tokenService: TokenService,
   ) {}
 
-  // ─── Organizer Auth ────────────────────────────────────────────────────────
-
-  /**
-   * Login de organizer.
-   * Rate limit: 5 tentativas/min por IP — previne brute force (OWASP A07)
-   */
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @Throttle({ auth: { limit: 5, ttl: 60_000 } })
   async organizerLogin(
-    @Body(new ZodValidationPipe(LoginSchema)) body: z.infer<typeof LoginSchema>,
+    @Body(new ZodValidationPipe(LoginSchema)) body: LoginDto,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
-  ) {
+  ): Promise<{ accessToken: string; expiresIn: number }> {
     const tokens = await this.organizerAuth.login(body.email, body.password, {
-      userAgent: req.headers['user-agent'],
-      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'] ?? undefined,
+      ipAddress: req.ip ?? undefined,
     });
 
-    // Refresh token em httpOnly cookie — imune a XSS
     this.setRefreshTokenCookie(res, tokens.refreshToken);
-
-    return {
-      accessToken: tokens.accessToken,
-      expiresIn: tokens.expiresIn,
-    };
+    return { accessToken: tokens.accessToken, expiresIn: tokens.expiresIn };
   }
-
-  // ─── Token Refresh ─────────────────────────────────────────────────────────
 
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    // Ler refresh token do httpOnly cookie
+  async refresh(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ statusCode: number; message: string } | { accessToken: string; expiresIn: number }> {
     const rawToken = req.cookies['refresh_token'] as string | undefined;
 
-    if (!rawToken) {
-      return { statusCode: 401, message: 'Refresh token não fornecido' };
-    }
+    if (!rawToken) return { statusCode: 401, message: 'Refresh token não fornecido' };
 
     const newTokens = await this.tokenService.rotate(rawToken, {
-      userAgent: req.headers['user-agent'],
-      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'] ?? undefined,
+      ipAddress: req.ip ?? undefined,
     });
 
     if (!newTokens) {
-      // Limpar cookie inválido
       res.clearCookie('refresh_token');
       return { statusCode: 401, message: 'Token inválido ou expirado' };
     }
 
     this.setRefreshTokenCookie(res, newTokens.refreshToken);
-
-    return {
-      accessToken: newTokens.accessToken,
-      expiresIn: newTokens.expiresIn,
-    };
+    return { accessToken: newTokens.accessToken, expiresIn: newTokens.expiresIn };
   }
-
-  // ─── Logout ────────────────────────────────────────────────────────────────
 
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
@@ -713,14 +792,11 @@ export class AuthController {
   async logout(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
-    @CurrentUser() user: AuthenticatedUser,
-  ) {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    @CurrentUser() _user: AuthenticatedUser,
+  ): Promise<void> {
     const rawToken = req.cookies['refresh_token'] as string | undefined;
-
-    if (rawToken) {
-      await this.tokenService.revoke(rawToken);
-    }
-
+    if (rawToken) await this.tokenService.revoke(rawToken);
     res.clearCookie('refresh_token');
   }
 
@@ -730,43 +806,35 @@ export class AuthController {
   async logoutAll(
     @Res({ passthrough: true }) res: Response,
     @CurrentUser() user: AuthenticatedUser,
-  ) {
+  ): Promise<void> {
     await this.tokenService.revokeAll(user.id, 'organizer');
     res.clearCookie('refresh_token');
   }
 
-  // ─── Buyer Auth ────────────────────────────────────────────────────────────
-
   @Post('buyer/login')
   @HttpCode(HttpStatus.OK)
-  @Throttle({ auth: { limit: 8, ttl: 60_000 } })  // buyers têm limite mais alto
+  @Throttle({ auth: { limit: 8, ttl: 60_000 } })
   async buyerLogin(
-    @Body(new ZodValidationPipe(LoginSchema)) body: z.infer<typeof LoginSchema>,
+    @Body(new ZodValidationPipe(LoginSchema)) body: LoginDto,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
-  ) {
+  ): Promise<{ accessToken: string; expiresIn: number }> {
     const tokens = await this.buyerAuth.login(body.email, body.password, {
-      userAgent: req.headers['user-agent'],
-      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'] ?? undefined,
+      ipAddress: req.ip ?? undefined,
     });
 
     this.setRefreshTokenCookie(res, tokens.refreshToken);
-
-    return {
-      accessToken: tokens.accessToken,
-      expiresIn: tokens.expiresIn,
-    };
+    return { accessToken: tokens.accessToken, expiresIn: tokens.expiresIn };
   }
-
-  // ─── Helpers ───────────────────────────────────────────────────────────────
 
   private setRefreshTokenCookie(res: Response, token: string): void {
     res.cookie('refresh_token', token, {
-      httpOnly: true,          // JavaScript não consegue ler — imune a XSS
-      secure: process.env.NODE_ENV === 'production',  // HTTPS em produção
-      sameSite: 'strict',      // Previne CSRF
-      maxAge: 30 * 24 * 60 * 60 * 1000,  // 30 dias em ms
-      path: '/auth',           // Cookie só enviado para /auth — scope mínimo
+      httpOnly: true,
+      secure: process.env['NODE_ENV'] === 'production',  // process.env['VAR'] — não process.env.VAR
+      sameSite: 'strict',
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      path: '/auth',
     });
   }
 }
@@ -778,24 +846,20 @@ export class AuthController {
 
 ```typescript
 // apps/auth-service/src/common/pipes/zod-validation.pipe.ts
-//
-// Pipe NestJS que valida o body usando um Zod schema.
-// Se inválido: retorna 422 com erros detalhados (mas seguros).
-// Não expõe nada sobre a implementação — apenas erros de validação.
 
 import { PipeTransform, Injectable, BadRequestException } from '@nestjs/common';
-import { ZodSchema, ZodError } from 'zod';
+import type { ZodType } from 'zod';  // ZodSchema foi deprecated no Zod 4 → ZodType
 
 @Injectable()
 export class ZodValidationPipe<T> implements PipeTransform {
-  constructor(private readonly schema: ZodSchema<T>) {}
+  constructor(private readonly schema: ZodType<T>) {}
 
   transform(value: unknown): T {
     const result = this.schema.safeParse(value);
 
     if (!result.success) {
-      // Formatar os erros do Zod em formato legível
-      const errors = (result.error as ZodError).errors.map((e) => ({
+      // Zod 4: .issues (renomeado de .errors em v3)
+      const errors = result.error.issues.map((e) => ({
         field: e.path.join('.'),
         message: e.message,
       }));
@@ -808,6 +872,100 @@ export class ZodValidationPipe<T> implements PipeTransform {
 
     return result.data;
   }
+}
+```
+
+---
+
+## Passo 4.10 — AuthModule, AppModule e main.ts
+
+```typescript
+// apps/auth-service/src/modules/auth/auth.module.ts
+
+import { Module } from '@nestjs/common';
+import { JwtModule } from '@nestjs/jwt';
+import { PassportModule } from '@nestjs/passport';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { AuthController } from './auth.controller.js';
+import { OrganizerAuthService } from './organizer-auth.service.js';
+import { BuyerAuthService } from './buyer-auth.service.js';
+import { TokenService } from './token.service.js';
+import { JwtStrategy } from './strategies/jwt.strategy.js';
+import { PrismaService } from '../../prisma/prisma.service.js';
+
+// eslint-disable-next-line security/detect-non-literal-fs-filename
+const privateKey = readFileSync(join(__dirname, '../../../keys/private.pem'));
+
+@Module({
+  imports: [
+    PassportModule,
+    JwtModule.register({
+      privateKey,
+      signOptions: { algorithm: 'RS256', audience: 'showpass-api', issuer: 'showpass-auth', expiresIn: '15m' },
+    }),
+  ],
+  controllers: [AuthController],
+  providers: [PrismaService, TokenService, OrganizerAuthService, BuyerAuthService, JwtStrategy],
+  exports: [TokenService, PrismaService],
+})
+// eslint-disable-next-line @typescript-eslint/no-extraneous-class -- padrão NestJS
+export class AuthModule {}
+```
+
+```typescript
+// apps/auth-service/src/app.module.ts
+
+import { Module } from '@nestjs/common';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { AuthModule } from './modules/auth/auth.module.js';
+
+@Module({
+  imports: [
+    ThrottlerModule.forRoot([
+      { name: 'default', ttl: 60_000, limit: 100 },
+      { name: 'auth',    ttl: 60_000, limit: 5 },
+    ]),
+    AuthModule,
+  ],
+})
+// eslint-disable-next-line @typescript-eslint/no-extraneous-class -- padrão NestJS
+export class AppModule {}
+```
+
+```typescript
+// apps/auth-service/src/main.ts
+
+import 'reflect-metadata';
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module.js';
+import cookieParser from 'cookie-parser';
+
+async function bootstrap(): Promise<void> {
+  const app = await NestFactory.create(AppModule);
+  app.use(cookieParser());
+  const port = parseInt(process.env['PORT'] ?? '3006', 10);
+  await app.listen(port);
+}
+
+void bootstrap();
+```
+
+### Dependências adicionais
+
+Adicionar ao `apps/auth-service/package.json`:
+
+```json
+"dependencies": {
+  "@nestjs/passport": "^11.0.0",
+  "cookie-parser": "^1.4.6",
+  "passport": "^0.7.0",
+  "passport-jwt": "^4.0.0"
+},
+"devDependencies": {
+  "@types/cookie-parser": "^1.4.6",
+  "@types/express": "^5.0.0",
+  "@types/passport-jwt": "^4.0.0"
 }
 ```
 
@@ -850,6 +1008,22 @@ export class ZodValidationPipe<T> implements PipeTransform {
 4. **httpOnly cookie** para o refresh token — imune a ataques XSS
 5. **Bcrypt custo 12** com timing constante — previne timing attack e brute force
 6. **OrganizerGuard / BuyerGuard** — contextos completamente separados, sem misturar
+
+---
+
+## Gotchas de versão (stack fixa do projeto)
+
+| Biblioteca | Mudança |
+|---|---|
+| **Prisma 7** | `url` removido do `datasource` → usar `prisma.config.ts` com `defineConfig` |
+| **Prisma 7** | Campos opcionais retornam `string \| null` (não `undefined`) → usar `?? null` ao criar |
+| **Zod 4** | `z.string().email()` deprecated → `z.email()` |
+| **Zod 4** | `ZodSchema` deprecated → `ZodType` |
+| **Zod 4** | `.errors` renomeado → `.issues` em `ZodError` |
+| **TypeScript strict** | `exactOptionalPropertyTypes: true` → `meta: { userAgent?: string \| undefined }` |
+| **TypeScript strict** | `noPropertyAccessFromIndexSignature` → `process.env['VAR']` (não `process.env.VAR`) |
+| **NodeNext CJS** | Sem `"type":"module"` no `package.json` → usar `__dirname` (não `import.meta.url`) |
+| **NodeNext** | Imports locais precisam de extensão `.js` → `'./token.service.js'` |
 
 ---
 
