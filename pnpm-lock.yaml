@@ -202,6 +202,9 @@ importers:
       '@prisma/client':
         specifier: ^7.0.0
         version: 7.7.0(prisma@7.7.0(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3))(typescript@5.9.3)
+      '@prisma/extension-read-replicas':
+        specifier: ^0.5.0
+        version: 0.5.0(@prisma/client@7.7.0(prisma@7.7.0(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3))(typescript@5.9.3))
       '@showpass/kafka':
         specifier: workspace:*
         version: link:../../packages/kafka
@@ -426,12 +429,18 @@ importers:
       '@nestjs/microservices':
         specifier: ^11.0.0
         version: 11.1.19(@nestjs/common@11.1.19(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.19)(ioredis@5.10.1)(kafkajs@2.2.4)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@showpass/types':
+        specifier: workspace:*
+        version: link:../types
       kafkajs:
         specifier: ^2.2.0
         version: 2.2.4
       reflect-metadata:
         specifier: ^0.2.0
         version: 0.2.2
+      rxjs:
+        specifier: ^7.8.0
+        version: 7.8.2
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -1109,6 +1118,11 @@ packages:
 
   '@prisma/engines@7.7.0':
     resolution: {integrity: sha512-7fmcbT7HHXBq/b+3h/dO1JI3fd8l8q7erf7xP7pRprh58hmSSnG8mg9K3yjW3h9WaHWUwngVFpSxxxivaitQ2w==}
+
+  '@prisma/extension-read-replicas@0.5.0':
+    resolution: {integrity: sha512-t0kLjqFMte4wwGrZFhya4iFoyoOY4kjlyyE60WXZL66PqP6PcBpW/35eKb/3UcxgjJxcDlaJKfmGokFLOyafiQ==}
+    peerDependencies:
+      '@prisma/client': ^7.0.0
 
   '@prisma/fetch-engine@7.7.0':
     resolution: {integrity: sha512-TfyzveBQoK4xALzsTpVhB/0KG1N8zOK0ap+RnBMkzGUu3f98fnQ4QtXa2wlKPhsO2X8a3N5ugFQgcKNoHGmDfw==}
@@ -3763,6 +3777,10 @@ snapshots:
       '@prisma/fetch-engine': 7.7.0
       '@prisma/get-platform': 7.7.0
 
+  '@prisma/extension-read-replicas@0.5.0(@prisma/client@7.7.0(prisma@7.7.0(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3))(typescript@5.9.3))':
+    dependencies:
+      '@prisma/client': 7.7.0(prisma@7.7.0(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3))(typescript@5.9.3)
+
   '@prisma/fetch-engine@7.7.0':
     dependencies:
       '@prisma/debug': 7.7.0
@@ -5205,7 +5223,6 @@ snapshots:
       react: 18.3.1
       react-dom: 18.3.1(react@18.3.1)
       styled-jsx: 5.1.6(react@18.3.1)
-      tar: 7.5.13
     optionalDependencies:
       '@next/swc-darwin-arm64': 16.2.3
       '@next/swc-darwin-x64': 16.2.3

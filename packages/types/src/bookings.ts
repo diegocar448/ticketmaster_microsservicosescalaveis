@@ -13,6 +13,8 @@ export const ReservationStatusSchema = z.enum([
 ]);
 export type ReservationStatus = z.infer<typeof ReservationStatusSchema>;
 
+
+
 // ─── Reserva ──────────────────────────────────────────────────────────────────
 
 export const ReserveSeatRequestSchema = z.object({
@@ -30,3 +32,16 @@ export const ReserveSeatResponseSchema = z.object({
   lockedSeats: z.array(z.uuid()),
 });
 export type ReserveSeatResponse = z.infer<typeof ReserveSeatResponseSchema>;
+
+export const CreateReservationSchema = z.object({
+  eventId: z.uuid(),
+  items: z.array(
+    z.object({
+      ticketBatchId: z.uuid(),
+      seatId: z.uuid().optional(),
+      quantity: z.number().int().min(1).max(10),
+    })
+  ).min(1).max(10),
+});
+
+export type CreateReservationDto = z.infer<typeof CreateReservationSchema>;

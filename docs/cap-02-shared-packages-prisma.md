@@ -36,10 +36,15 @@ packages/types/
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
+    "lint": "eslint src/",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
     "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0"
   }
 }
 ```
@@ -313,6 +318,7 @@ export interface KafkaModuleOptions {
 }
 
 @Module({})
+// eslint-disable-next-line @typescript-eslint/no-extraneous-class -- padrão NestJS: módulos com forRoot() são classes estáticas por design
 export class KafkaModule {
   static forRoot(options: KafkaModuleOptions): DynamicModule {
     return {
@@ -355,6 +361,7 @@ export class KafkaModule {
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import type { KafkaTopic } from '@showpass/types';
+import { firstValueFrom } from 'rxjs';
 
 @Injectable()
 export class KafkaProducerService implements OnModuleInit {
@@ -380,6 +387,7 @@ export class KafkaProducerService implements OnModuleInit {
    *              Garante que eventos do mesmo agregado vão para a mesma partição
    *              e são processados em ordem
    */
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- T garante type-safety no caller
   async emit<T>(topic: KafkaTopic, payload: T, key?: string): Promise<void> {
     const message = {
       key: key ?? null,
@@ -392,7 +400,8 @@ export class KafkaProducerService implements OnModuleInit {
       }),
     };
 
-    await this.client.emit(topic, message).toPromise();
+    // firstValueFrom substitui .toPromise() deprecated no RxJS v7+
+    await firstValueFrom(this.client.emit(topic, message));
 
     this.logger.debug(`Evento emitido: ${topic}`, { key });
   }
@@ -420,6 +429,7 @@ export interface RedisModuleOptions {
 export const REDIS_CLIENT = 'REDIS_CLIENT';
 
 @Module({})
+// eslint-disable-next-line @typescript-eslint/no-extraneous-class -- padrão NestJS: módulos com forRoot() são classes estáticas por design
 export class RedisModule {
   static forRoot(options: RedisModuleOptions): DynamicModule {
     const redisProvider = {
@@ -431,7 +441,7 @@ export class RedisModule {
           password: options.password,
           db: options.db ?? 0,
           // Reconectar automaticamente com backoff exponencial
-          retryStrategy: (times) => Math.min(times * 50, 2000),
+          retryStrategy: (times: number): number => Math.min(times * 50, 2000),
           // Timeout de conexão: 5s
           connectTimeout: 5000,
           // Manter conexão viva com PING periódico
@@ -488,7 +498,8 @@ export class RedisService {
    * @returns true se adquiriu o lock, false se já está travado
    */
   async acquireLock(key: string, ownerId: string, ttlSeconds: number): Promise<boolean> {
-    const result = await this.redis.set(key, ownerId, 'NX', 'EX', ttlSeconds);
+    // ioredis v5: ordem obrigatória EX <ttl> NX — não inverter (causa erro de tipo)
+    const result = await this.redis.set(key, ownerId, 'EX', ttlSeconds, 'NX');
     return result === 'OK';
   }
 

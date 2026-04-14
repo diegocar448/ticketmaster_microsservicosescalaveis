@@ -1,0 +1,67 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/prisma/generated"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Order {
+  id String @id @default(uuid()) @db.Uuid
+
+  // Referências cross-service (sem FK — integridade via eventos)
+  buyerId     String @db.Uuid
+  eventId     String @db.Uuid
+  organizerId String @db.Uuid
+
+  status String @default("pending")
+
+  subtotal   Decimal @db.Decimal(10, 2)
+  serviceFee Decimal @db.Decimal(10, 2)
+  total      Decimal @db.Decimal(10, 2)
+
+  // Stripe
+  stripePaymentIntentId   String? @unique
+  stripeCheckoutSessionId String? @unique
+  stripeChargeId          String?
+
+  // Idempotency key: hash dos reservation IDs
+  // Protege contra dupla cobrança em retries
+  idempotencyKey String @unique
+
+  paymentMethod  String? // "card", "pix"
+  cardLastFour   String? @db.Char(4)
+  cardBrand      String?
+
+  paidAt     DateTime?
+  refundedAt DateTime?
+
+  items OrderItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([buyerId, status])
+  @@index([organizerId, status])
+  @@map("orders")
+}
+
+model OrderItem {
+  id      String @id @default(uuid()) @db.Uuid
+  orderId String @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  reservationId String @db.Uuid
+  ticketBatchId String @db.Uuid
+  seatId        String? @db.Uuid
+
+  // Snapshot do preço no momento da compra
+  // (o preço pode mudar depois — o ingresso vale o valor pago)
+  unitPrice Decimal @db.Decimal(10, 2)
+  quantity  Int     @default(1)
+  total     Decimal @db.Decimal(10, 2)
+
+  @@map("order_items")
+}

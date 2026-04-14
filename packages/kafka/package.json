@@ -11,8 +11,10 @@
   "dependencies": {
     "@nestjs/common": "^11.0.0",
     "@nestjs/microservices": "^11.0.0",
+    "@showpass/types": "workspace:*",
     "kafkajs": "^2.2.0",
-    "reflect-metadata": "^0.2.0"
+    "reflect-metadata": "^0.2.0",
+    "rxjs": "^7.8.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
