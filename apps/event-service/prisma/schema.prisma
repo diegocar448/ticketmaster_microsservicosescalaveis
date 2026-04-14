@@ -5,7 +5,8 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  // Prisma 7: url foi movida para prisma.config.ts (defineConfig)
+  // Ver https://www.prisma.io/docs/guides/upgrade-guides/upgrading-versions/upgrading-to-prisma-7
 }
 
 // ─── Plans (SaaS tiers) ───────────────────────────────────────────────────────
