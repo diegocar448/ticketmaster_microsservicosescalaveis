@@ -825,6 +825,27 @@ Impacto do cache em picos de evento:
 
 ---
 
+---
+
+## Gotchas de versão (correções aplicadas)
+
+| # | Problema | Causa | Correção |
+|---|----------|-------|---------|
+| 1 | `url = env("DATABASE_URL")` no schema.prisma | Prisma 7 removeu `url` do datasource block | Criar `prisma.config.ts` com `defineConfig({ datasourceUrl: ... })` |
+| 2 | `import { PrismaClient } from '../src/prisma/generated'` no seed | Extensão `.js` obrigatória em NodeNext | Usar `from '../src/prisma/generated/index.js'` |
+| 3 | `thumbnailUrl: dto.thumbnailUrl` causa TS2375 | Prisma espera `string \| null`, Zod retorna `string \| undefined` | Usar `dto.thumbnailUrl ?? null` (converte undefined → null) |
+| 4 | `TRANSITIONS[from]` dispara `security/detect-object-injection` | Regra OWASP A03 detecta acesso dinâmico a objeto | Extrair para variável com `eslint-disable-next-line` documentado |
+| 5 | `Date.now()` em template literal causa `restrict-template-expressions` | Regra restringe tipos não-string em templates | Usar `String(Date.now())` |
+| 6 | `organizer.plan.maxVenues` em template literal | Mesmo motivo: número em template | Usar `String(organizer.plan.maxVenues)` |
+| 7 | Falta `listByOrganizer` no `EventsService` | Tutorial mostra no controller mas omite no service | Adicionado o método delegando ao repository |
+| 8 | `status as any` no controller | Tipo `EventStatus` não importado | Cast para `EventStatus` do `@showpass/types` |
+| 9 | `user.organizerId!` viola `no-non-null-assertion` | Guard garante presença mas TypeScript não sabe | Método privado `assertOrganizerId` com `ForbiddenException` |
+| 10 | Falta `@Global()` no PrismaModule | Sem isso, modules precisam importar PrismaModule individualmente | `PrismaModule` com `@Global()` no `AppModule` |
+| 11 | `baseUrl` depreciado no tsconfig.json | TypeScript 6 deprecou `baseUrl` | Adicionar `"ignoreDeprecations": "6.0"` |
+| 12 | `exactOptionalPropertyTypes` + `status?: EventStatus` | `status: status as EventStatus \| undefined` passa explicit undefined | Spread condicional: `...(status !== undefined ? { status: status as EventStatus } : {})` |
+
+---
+
 ## Próximo capítulo
 
 [Capítulo 6 → Booking Service](cap-06-booking-service.md)
