@@ -15,7 +15,8 @@
       "Bash(grep -v \"^\\\\s\\\\s[a-z].*:$\")",
       "Bash(ls /home/diegocar448/projects/ticketmaster_microsserviçosescalaveis/*.env*)",
       "Bash(ls /home/diegocar448/projects/ticketmaster_microsserviçosescalaveis/.env*)",
-      "Bash(grep -v \"cache miss\\\\|^--$\\\\|> @showpass\\\\|> eslint\")"
+      "Bash(grep -v \"cache miss\\\\|^--$\\\\|> @showpass\\\\|> eslint\")",
+      "Bash(grep -E \"\\\\.ts$|  error  |error TS|ELIFECYCLE|Failed\")"
     ]
   },
   "hooks": {
