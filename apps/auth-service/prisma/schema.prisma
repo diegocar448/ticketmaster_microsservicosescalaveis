@@ -1,0 +1,111 @@
+// apps/auth-service/prisma/schema.prisma
+//
+// Banco de dados do Auth Service.
+// O auth-service é dono dos dados de identidade: credenciais, tokens, verificações.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/prisma/generated"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Planos de organizer ───────────────────────────────────────────────────────
+
+model Plan {
+  id        String      @id @default(uuid()) @db.Uuid
+  slug      String      @unique
+  name      String
+  organizers Organizer[]
+  createdAt DateTime    @default(now())
+
+  @@map("plans")
+}
+
+// ─── Organizer (empresa/produtor de eventos) ───────────────────────────────────
+
+model Organizer {
+  id          String          @id @default(uuid()) @db.Uuid
+  name        String
+  slug        String          @unique
+  planId      String          @db.Uuid
+  plan        Plan            @relation(fields: [planId], references: [id])
+  trialEndsAt DateTime?
+  users       OrganizerUser[]
+  createdAt   DateTime        @default(now())
+
+  @@map("organizers")
+}
+
+// ─── Usuário de organizer (admin/staff da empresa) ────────────────────────────
+
+model OrganizerUser {
+  id           String    @id @default(uuid()) @db.Uuid
+  organizerId  String    @db.Uuid
+  organizer    Organizer @relation(fields: [organizerId], references: [id])
+  name         String
+  email        String    @unique
+  passwordHash String
+  // Papel dentro da organização: owner tem acesso total
+  role         String    @default("member")
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@map("organizer_users")
+}
+
+// ─── Comprador (usuário final que compra ingressos) ───────────────────────────
+
+model Buyer {
+  id           String    @id @default(uuid()) @db.Uuid
+  email        String    @unique
+  name         String?
+  passwordHash String
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@map("buyers")
+}
+
+// ─── Refresh tokens ───────────────────────────────────────────────────────────
+// Armazenados para permitir revogação explícita (logout, theft detection).
+// Nunca armazenar o token em texto plano — apenas SHA-256(token).
+
+model RefreshToken {
+  id String @id @default(uuid()) @db.Uuid
+
+  // Polimórfico: pode pertencer a OrganizerUser ou Buyer
+  tokenableId   String @db.Uuid
+  tokenableType String  // "organizer_user" | "buyer"
+
+  // Hash do token (nunca armazenar o token em texto plano)
+  tokenHash String @unique
+
+  // Metadados para auditoria e revogação
+  userAgent  String?
+  ipAddress  String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([tokenableId, tokenableType])
+  @@map("refresh_tokens")
+}
+
+// ─── Email verification tokens ────────────────────────────────────────────────
+
+model EmailVerification {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  userType   String    // "organizer_user" | "buyer"
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  verifiedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@map("email_verifications")
+}

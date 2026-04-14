@@ -7,3 +7,4 @@ export * from './events.js';
 export * from './bookings.js';
 export * from './payments.js';
 export * from './kafka-topics.js';
+export * from './decorators/current-user.decorator.js';
