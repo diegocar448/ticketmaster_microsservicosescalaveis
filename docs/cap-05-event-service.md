@@ -825,8 +825,6 @@ Impacto do cache em picos de evento:
 
 ---
 
----
-
 ## Gotchas de versão (correções aplicadas)
 
 | # | Problema | Causa | Correção |
@@ -843,6 +841,73 @@ Impacto do cache em picos de evento:
 | 10 | Falta `@Global()` no PrismaModule | Sem isso, modules precisam importar PrismaModule individualmente | `PrismaModule` com `@Global()` no `AppModule` |
 | 11 | `baseUrl` depreciado no tsconfig.json | TypeScript 6 deprecou `baseUrl` | Adicionar `"ignoreDeprecations": "6.0"` |
 | 12 | `exactOptionalPropertyTypes` + `status?: EventStatus` | `status: status as EventStatus \| undefined` passa explicit undefined | Spread condicional: `...(status !== undefined ? { status: status as EventStatus } : {})` |
+| 13 | CI falha com `Unsafe call of a type that could not be resolved` | `src/prisma/generated/` está no `.gitignore` — não existe no runner | Ver seção abaixo |
+
+---
+
+## CI: Prisma Client não existe no runner do GitHub Actions
+
+### Por que o erro acontece
+
+O `src/prisma/generated/` está no `.gitignore` por um bom motivo: é código gerado automaticamente a partir do `schema.prisma`. Versionar código gerado cria conflitos de merge e polui o histórico. O correto é gerá-lo durante o build.
+
+Mas o CI roda `eslint` sem ter gerado o cliente antes:
+
+```
+pnpm install           # instala dependências, NÃO roda prisma generate
+pnpm turbo run lint    # ESLint tenta analisar this.prisma.buyer.findUnique(...)
+                       # src/prisma/generated/ não existe → PrismaClient é unknown
+                       # → 96 erros "Unsafe call of a type that could not be resolved"
+```
+
+### A fix: `db:generate` como dependência do `lint`
+
+**Passo 1** — Adicionar o script em cada serviço com Prisma (`package.json`):
+
+```json
+{
+  "scripts": {
+    "db:generate": "prisma generate"
+  }
+}
+```
+
+**Passo 2** — Declarar o task no `turbo.json` e torná-lo pré-requisito de `lint` e `type-check`:
+
+```json
+{
+  "tasks": {
+    "db:generate": {
+      "outputs": ["src/prisma/generated/**", "prisma/generated/**"]
+    },
+    "lint": {
+      "dependsOn": ["db:generate"],
+      "inputs": ["$TURBO_DEFAULT$"]
+    },
+    "type-check": {
+      "dependsOn": ["db:generate"],
+      "inputs": ["$TURBO_DEFAULT$"]
+    }
+  }
+}
+```
+
+Com isso, `pnpm turbo run lint` passa a executar:
+
+```
+db:generate (auth-service)   → gera src/prisma/generated/
+db:generate (event-service)  → gera src/prisma/generated/
+lint        (auth-service)   → ESLint com tipos Prisma disponíveis ✓
+lint        (event-service)  → ESLint com tipos Prisma disponíveis ✓
+```
+
+Pacotes sem `db:generate` (ex: `@showpass/types`, `@showpass/kafka`) são silenciosamente ignorados pelo Turborepo.
+
+> **Regra para os próximos capítulos:** todo novo serviço que usar Prisma precisa de `"db:generate": "prisma generate"` no `package.json` antes do primeiro PR. Sem isso, o CI vai falhar com os mesmos 96 erros.
+
+### Cache do Turborepo
+
+O campo `"outputs"` no task `db:generate` ativa o cache do Turborepo. Se o `schema.prisma` não mudou desde a última run, o Turbo **pula a geração** e usa o resultado em cache. O CI fica mais rápido a partir do segundo run.
 
 ---
 
