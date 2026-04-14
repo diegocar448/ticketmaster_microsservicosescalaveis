@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import type { KafkaTopic } from '@showpass/types';
+import { firstValueFrom } from 'rxjs';
 
 @Injectable()
 export class KafkaProducerService implements OnModuleInit {
@@ -26,6 +27,7 @@ export class KafkaProducerService implements OnModuleInit {
    *              Garante que eventos do mesmo agregado vão para a mesma partição
    *              e são processados em ordem
    */
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- T garante type-safety no caller (emit<ReservationCreated>(topic, payload))
   async emit<T>(topic: KafkaTopic, payload: T, key?: string): Promise<void> {
     const message = {
       key: key ?? null,
@@ -38,7 +40,8 @@ export class KafkaProducerService implements OnModuleInit {
       }),
     };
 
-    await this.client.emit(topic, message).toPromise();
+    // firstValueFrom substitui .toPromise() deprecated no RxJS v7+
+    await firstValueFrom(this.client.emit(topic, message));
 
     this.logger.debug(`Evento emitido: ${topic}`, { key });
   }

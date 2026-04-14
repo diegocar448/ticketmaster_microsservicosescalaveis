@@ -25,7 +25,8 @@ export class RedisService {
    * @returns true se adquiriu o lock, false se já está travado
    */
   async acquireLock(key: string, ownerId: string, ttlSeconds: number): Promise<boolean> {
-    const result = await this.redis.set(key, ownerId, 'NX', 'EX', ttlSeconds);
+    // ioredis v5: ordem obrigatória EX <ttl> NX — não inverter (causa TS2769)
+    const result = await this.redis.set(key, ownerId, 'EX', ttlSeconds, 'NX');
     return result === 'OK';
   }
 
@@ -74,6 +75,7 @@ export class RedisService {
     return JSON.parse(raw) as T;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- T garante type-safety no caller (set<Event>(key, event))
   async set<T>(key: string, value: T, ttlSeconds?: number): Promise<void> {
     const serialized = JSON.stringify(value);
     if (ttlSeconds) {

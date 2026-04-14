@@ -13,6 +13,7 @@ export interface KafkaModuleOptions {
 }
 
 @Module({})
+// eslint-disable-next-line @typescript-eslint/no-extraneous-class -- padrão NestJS: módulos com forRoot() são classes estáticas por design
 export class KafkaModule {
   static forRoot(options: KafkaModuleOptions): DynamicModule {
     return {

@@ -12,6 +12,7 @@ export interface RedisModuleOptions {
 export const REDIS_CLIENT = 'REDIS_CLIENT';
 
 @Module({})
+// eslint-disable-next-line @typescript-eslint/no-extraneous-class -- padrão NestJS: módulos com forRoot() são classes estáticas por design
 export class RedisModule {
   static forRoot(options: RedisModuleOptions): DynamicModule {
     const redisProvider = {
@@ -23,7 +24,7 @@ export class RedisModule {
           password: options.password,
           db: options.db ?? 0,
           // Reconectar automaticamente com backoff exponencial
-          retryStrategy: (times) => Math.min(times * 50, 2000),
+          retryStrategy: (times: number): number => Math.min(times * 50, 2000),
           // Timeout de conexão: 5s
           connectTimeout: 5000,
           // Manter conexão viva com PING periódico
