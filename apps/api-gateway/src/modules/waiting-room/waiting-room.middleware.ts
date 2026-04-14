@@ -12,15 +12,24 @@ export class WaitingRoomMiddleware implements NestMiddleware {
   async use(req: Request, res: Response, next: NextFunction): Promise<void> {
     // Apenas para rotas de reserva
     if (!req.path.includes('/bookings/reservations')) {
-      return next();
+      next();
+      return;
     }
 
-    const eventId = req.body?.eventId as string | undefined;
-    if (!eventId) return next();
+    // req.body é `any` do Express — extrair eventId de forma segura
+    const rawBody = req.body as Record<string, unknown> | undefined;
+    const eventId = typeof rawBody?.['eventId'] === 'string' ? rawBody['eventId'] : undefined;
+    if (!eventId) {
+      next();
+      return;
+    }
 
     // Verificar se está em alta demanda
     const highDemand = await this.waitingRoom.isHighDemand(eventId);
-    if (!highDemand) return next();
+    if (!highDemand) {
+      next();
+      return;
+    }
 
     // Verificar admission token (header personalizado)
     const admissionToken = req.headers['x-admission-token'] as string | undefined;

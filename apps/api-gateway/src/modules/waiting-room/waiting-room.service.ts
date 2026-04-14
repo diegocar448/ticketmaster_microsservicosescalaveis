@@ -68,7 +68,7 @@ export class WaitingRoomService {
     const position = await this.getPosition(eventId, token);
     const estimatedWaitSeconds = Math.ceil((position / BATCH_SIZE) * (ADVANCE_INTERVAL_MS / 1000));
 
-    this.logger.log(`Token ${token} entrou na fila de ${eventId} na posição ${position}`);
+    this.logger.log(`Token ${token} entrou na fila de ${eventId} na posição ${position.toString()}`);
 
     return { token, position, estimatedWaitSeconds };
   }
@@ -115,7 +115,7 @@ export class WaitingRoomService {
     // Remover os admitidos da fila
     await this.redis['redis'].zremrangebyrank(`queue:${eventId}`, 0, BATCH_SIZE - 1);
 
-    this.logger.log(`Fila ${eventId}: ${admitted.length} usuários admitidos`);
+    this.logger.log(`Fila ${eventId}: ${admitted.length.toString()} usuários admitidos`);
 
     return admitted;  // caller notifica via WebSocket
   }
