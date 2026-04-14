@@ -1,11 +1,16 @@
 // apps/auth-service/prisma.config.ts
-// Configuração do Prisma 7 — URL do banco via variável de ambiente.
-// Prisma 7 separou a config do schema para suportar múltiplos adapters.
+//
+// Prisma 7: a URL do banco vem de prisma.config.ts, não do schema.prisma.
+// Campo correto: datasource.url (NÃO datasourceUrl — esse campo não existe).
+// import 'dotenv/config' carrega o .env antes de process.env ser lido.
 
+import 'dotenv/config';
 import { defineConfig } from 'prisma/config';
 
 export default defineConfig({
-  datasourceUrl: process.env['DATABASE_URL'],
   earlyAccess: true,
   schema: 'prisma/schema.prisma',
+  datasource: {
+    url: process.env['DATABASE_URL'],
+  },
 });

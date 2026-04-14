@@ -6,6 +6,7 @@
 .PHONY: dev build test lint type-check \
         infra-up infra-down infra-logs \
         db-migrate db-seed db-studio \
+        copy-env gen-keys \
         github-setup clean help
 
 # ─── Desenvolvimento ──────────────────────────────────────────────────────────
@@ -88,8 +89,36 @@ github-setup:
 
 # ─── Setup inicial ────────────────────────────────────────────────────────────
 
+# Copia .env.example → .env para cada serviço (não sobrescreve se já existir)
+copy-env:
+	@for dir in apps/*/; do \
+		if [ -f "$$dir.env.example" ] && [ ! -f "$$dir.env" ]; then \
+			cp "$$dir.env.example" "$$dir.env"; \
+			echo "  ✓ $$dir.env criado (preencha os valores antes de rodar)"; \
+		fi; \
+	done
+	@echo "ℹ️  Edite os arquivos .env antes de continuar (especialmente RSA keys e secrets)"
+
+# Gera par de chaves RSA 4096-bit e distribui a chave pública para os outros serviços
+# Pré-requisito: ter copiado .env.example → .env em todos os serviços
+gen-keys:
+	@echo "🔑 Gerando par de chaves RSA 4096-bit para o auth-service..."
+	@openssl genrsa -out /tmp/showpass_private.pem 4096 2>/dev/null
+	@openssl rsa -in /tmp/showpass_private.pem -pubout -out /tmp/showpass_public.pem 2>/dev/null
+	@PRIVATE_KEY=$$(awk 'NF{printf "%s\\n", $$0}' /tmp/showpass_private.pem); \
+	 PUBLIC_KEY=$$(awk 'NF{printf "%s\\n", $$0}' /tmp/showpass_public.pem); \
+	 sed -i "s|^JWT_PRIVATE_KEY=.*|JWT_PRIVATE_KEY=$$PRIVATE_KEY|" apps/auth-service/.env; \
+	 sed -i "s|^JWT_PUBLIC_KEY=.*|JWT_PUBLIC_KEY=$$PUBLIC_KEY|" apps/auth-service/.env; \
+	 for svc in api-gateway booking-service payment-service search-service worker-service web; do \
+	   if [ -f "apps/$$svc/.env" ]; then \
+	     sed -i "s|^JWT_PUBLIC_KEY=.*|JWT_PUBLIC_KEY=$$PUBLIC_KEY|" "apps/$$svc/.env"; \
+	   fi; \
+	 done
+	@rm -f /tmp/showpass_private.pem /tmp/showpass_public.pem
+	@echo "✅ Chaves RSA geradas e distribuídas para todos os serviços"
+
 # Setup completo do ambiente do zero
-setup: infra-up
+setup: copy-env infra-up
 	@echo "⏳ Aguardando banco ficar pronto..."
 	@sleep 5
 	pnpm install
@@ -100,6 +129,8 @@ setup: infra-up
 	@echo "   API Gateway: http://localhost:3001"
 	@echo "   Swagger UI:  http://localhost:3001/docs"
 	@echo "   Kafka UI:    http://localhost:8080"
+	@echo ""
+	@echo "⚠️  Se é a primeira vez: rode 'make gen-keys' para gerar as chaves RSA"
 
 # ─── Ajuda ───────────────────────────────────────────────────────────────────
 
@@ -109,6 +140,8 @@ help:
 	@echo "================================"
 	@echo ""
 	@echo "Desenvolvimento:"
+	@echo "  make copy-env     Copia .env.example → .env (não sobrescreve)"
+	@echo "  make gen-keys     Gera chaves RSA e distribui public key"
 	@echo "  make setup        Setup completo do ambiente (primeira vez)"
 	@echo "  make dev          Sobe infra + serviços em modo watch"
 	@echo "  make infra-up     Sobe apenas postgres, redis, kafka, elasticsearch"

@@ -1,4 +1,4 @@
-// apps/event-service/prisma.config.ts
+// apps/booking-service/prisma.config.ts
 //
 // Prisma 7: a URL do banco vem de prisma.config.ts, não do schema.prisma.
 // Campo correto: datasource.url (NÃO datasourceUrl — esse campo não existe em Prisma 7).

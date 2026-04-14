@@ -551,6 +551,8 @@ CMD ["node", "dist/main.js"]
 
 ## Passo 1.10 — `.env.example` (por serviço)
 
+Cada serviço tem um `.env.example` com os nomes e valores padrão de desenvolvimento. O arquivo `.env` (com valores reais) não é versionado — está no `.gitignore`.
+
 ```bash
 # apps/event-service/.env.example
 # Copie para .env e preencha os valores
@@ -576,6 +578,27 @@ OTEL_SERVICE_NAME=event-service
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
+### Criar os `.env` de todos os serviços
+
+O `docker-compose.yml` usa `env_file` para cada serviço — se o arquivo não existir, o `docker compose up` falha com `env file not found`. **Antes de rodar qualquer comando docker compose**, crie os arquivos para todos os serviços:
+
+```bash
+# A partir da raiz do monorepo — copia todos os .env.example para .env
+for svc in api-gateway auth-service event-service booking-service \
+            payment-service search-service worker-service web; do
+  if [ ! -f "apps/$svc/.env" ]; then
+    cp "apps/$svc/.env.example" "apps/$svc/.env"
+    echo "✓ apps/$svc/.env criado"
+  else
+    echo "  apps/$svc/.env já existe, mantido"
+  fi
+done
+```
+
+Neste ponto os arquivos têm os valores padrão do `.env.example`. O campo `JWT_PUBLIC_KEY` ainda é um placeholder — ele será preenchido no **Capítulo 4** após gerar o par RSA.
+
+> **Por que não há um `.env` pronto no repo?** Porque `.env` contém segredos (chaves RSA, API keys, senhas de banco). Versionar segredos é a vulnerabilidade OWASP A02 (Cryptographic Failures). O `.env.example` documenta o contrato de configuração sem expor valores reais.
+
 ---
 
 ## Passo 1.11 — `Makefile`
@@ -583,7 +606,35 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```makefile
 # Makefile — comandos do dia a dia
 
-.PHONY: dev build test lint infra-up infra-down db-migrate db-seed clean
+.PHONY: setup dev build test lint infra-up infra-down db-migrate db-seed clean
+
+# ─── Setup inicial (rodar uma vez após clonar o repo) ────────────────────────
+# Cria os .env de todos os serviços a partir dos .env.example
+# As chaves RSA são preenchidas no Cap 04 (make gen-keys)
+setup:
+	@for svc in api-gateway auth-service event-service booking-service \
+	             payment-service search-service worker-service web; do \
+	  if [ ! -f "apps/$$svc/.env" ]; then \
+	    cp "apps/$$svc/.env.example" "apps/$$svc/.env"; \
+	    echo "✓ apps/$$svc/.env criado"; \
+	  else \
+	    echo "  apps/$$svc/.env já existe"; \
+	  fi; \
+	done
+
+# Gera par RSA e distribui JWT_PUBLIC_KEY para todos os .env
+# Requer: openssl instalado
+gen-keys:
+	@openssl genrsa -out /tmp/showpass_private.pem 4096 2>/dev/null
+	@openssl rsa -in /tmp/showpass_private.pem -pubout -out /tmp/showpass_public.pem 2>/dev/null
+	@PRIV=$$(awk 'NF{printf "%s\\n", $$0}' /tmp/showpass_private.pem); \
+	 PUB=$$(awk 'NF{printf "%s\\n", $$0}' /tmp/showpass_public.pem); \
+	 sed -i "s|JWT_PRIVATE_KEY=.*|JWT_PRIVATE_KEY=\"$$PRIV\"|" apps/auth-service/.env; \
+	 for svc in api-gateway auth-service event-service booking-service payment-service search-service; do \
+	   sed -i "s|JWT_PUBLIC_KEY=.*|JWT_PUBLIC_KEY=\"$$PUB\"|" apps/$$svc/.env; \
+	   echo "✓ JWT_PUBLIC_KEY atualizada em apps/$$svc/.env"; \
+	 done
+	@echo "✓ Par RSA gerado e distribuído"
 
 # ─── Desenvolvimento ──────────────────────────────────────────────────────────
 dev:
@@ -978,6 +1029,15 @@ Neste capítulo não há serviços HTTP ainda — mas você pode verificar que t
 Apenas o Docker Compose.
 
 ### Passo a passo
+
+**0. Setup inicial (uma vez após clonar o repo)**
+
+```bash
+pnpm install
+make setup      # cria os .env de todos os serviços a partir dos .env.example
+```
+
+Os `.env` criados têm valores de desenvolvimento funcional — exceto `JWT_PUBLIC_KEY` e `JWT_PRIVATE_KEY`, que são placeholders até o Cap 04 (`make gen-keys`).
 
 **1. Subir os containers de infraestrutura**
 

@@ -10,6 +10,7 @@
     "type-check": "tsc --noEmit",
     "test": "jest",
     "test:e2e": "jest --config test/jest-e2e.json",
+    "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:prod": "prisma migrate deploy",
     "db:studio": "prisma studio"
@@ -19,9 +20,11 @@
     "@nestjs/core": "^11.0.0",
     "@nestjs/microservices": "^11.0.0",
     "@nestjs/platform-express": "^11.0.0",
+    "@prisma/adapter-pg": "^7.7.0",
     "@prisma/client": "^7.0.0",
     "@showpass/kafka": "workspace:*",
     "@showpass/types": "workspace:*",
+    "pg": "^8.20.0",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.0",
     "stripe": "^16.0.0",
@@ -30,6 +33,8 @@
   "devDependencies": {
     "@nestjs/testing": "^11.0.0",
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.20.0",
+    "dotenv": "^17.4.2",
     "prisma": "^7.0.0",
     "tsx": "^4.0.0"
   }

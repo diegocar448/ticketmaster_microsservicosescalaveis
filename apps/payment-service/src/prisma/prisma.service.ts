@@ -1,9 +1,6 @@
-// apps/event-service/src/prisma/prisma.service.ts
+// apps/payment-service/src/prisma/prisma.service.ts
 //
 // Wrapper do PrismaClient para injeção de dependência no NestJS.
-// Read-replica: se DATABASE_REPLICA_URL estiver configurado, queries de leitura
-// são roteadas automaticamente para a replica (via @prisma/extension-read-replicas).
-// Sem réplica (dev/staging) → todas as queries vão para o primary.
 //
 // Prisma 7 "client" engine type exige driver adapter (@prisma/adapter-pg).
 // O pool pg.Pool gerencia conexões — reutilizável entre queries (evita overhead
@@ -27,11 +24,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
   async onModuleInit(): Promise<void> {
     await this.$connect();
-    this.logger.log(
-      process.env['DATABASE_REPLICA_URL']
-        ? 'Prisma conectado — Primary + Read-Replica ativos'
-        : 'Prisma conectado',
-    );
+    this.logger.log('Prisma conectado — payment database');
   }
 
   async onModuleDestroy(): Promise<void> {

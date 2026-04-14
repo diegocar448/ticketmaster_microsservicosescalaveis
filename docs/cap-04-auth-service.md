@@ -32,20 +32,46 @@ RS256 (assimétrico):
 ## Passo 4.1 — Gerar par de chaves RSA
 
 ```bash
-# Criar diretório de chaves
-mkdir -p apps/auth-service/keys packages/types/keys
+# Gerar chave privada RSA 4096-bit
+openssl genrsa -out /tmp/showpass_private.pem 4096
 
-# Gerar chave privada RSA 4096-bit (auth-service guarda)
-openssl genrsa -out apps/auth-service/keys/private.pem 4096
-
-# Extrair chave pública (distribuída para todos os serviços)
-openssl rsa -in apps/auth-service/keys/private.pem \
-            -pubout \
-            -out packages/types/keys/public.pem
+# Extrair chave pública
+openssl rsa -in /tmp/showpass_private.pem -pubout -out /tmp/showpass_public.pem
 ```
 
-> O `.gitignore` já contém `**/*.pem` que ignora ambas as chaves automaticamente.
-> Nunca commitar chaves RSA — em produção, injetar via secrets do K8s.
+> O `.gitignore` já contém `**/*.pem`. Nunca commitar chaves RSA — em produção, injetar via secrets do K8s.
+
+### Passo 4.1b — Colocar as chaves nos `.env`
+
+Variáveis de ambiente não aceitam quebras de linha reais. As chaves precisam ser formatadas com `\n` literal em uma única linha:
+
+```bash
+# Formatar as chaves (substitui newlines por \n literal)
+PRIVATE_KEY=$(awk 'NF{printf "%s\\n", $0}' /tmp/showpass_private.pem)
+PUBLIC_KEY=$(awk 'NF{printf "%s\\n", $0}' /tmp/showpass_public.pem)
+
+# Inserir no .env do auth-service (chave privada — somente ele)
+sed -i "s|JWT_PRIVATE_KEY=.*|JWT_PRIVATE_KEY=\"${PRIVATE_KEY}\"|" apps/auth-service/.env
+sed -i "s|JWT_PUBLIC_KEY=.*|JWT_PUBLIC_KEY=\"${PUBLIC_KEY}\"|" apps/auth-service/.env
+
+# Distribuir a chave pública para todos os serviços que validam JWT
+for svc in api-gateway event-service booking-service payment-service search-service; do
+  sed -i "s|JWT_PUBLIC_KEY=.*|JWT_PUBLIC_KEY=\"${PUBLIC_KEY}\"|" apps/$svc/.env
+  echo "✓ JWT_PUBLIC_KEY atualizada em apps/$svc/.env"
+done
+```
+
+> **Por que todos os serviços precisam da chave pública?**
+> Com JWT RS256, o auth-service **assina** o token com a chave privada e qualquer serviço pode **verificar** com a chave pública — sem precisar chamar o auth-service em cada request. Se a chave pública estiver errada em um serviço, ele rejeita todos os tokens com `401 Unauthorized`.
+
+**Verificar que funcionou:**
+
+```bash
+# A chave no .env deve começar com -----BEGIN PUBLIC KEY-----
+grep "JWT_PUBLIC_KEY" apps/event-service/.env | head -c 80
+```
+
+Saída esperada: `JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nMIIBIjAN...`
 
 ---
 
@@ -169,14 +195,22 @@ model EmailVerification {
 
 ```typescript
 // apps/auth-service/prisma.config.ts
-// Prisma 7 separou a URL do schema para suportar múltiplos adapters.
+//
+// Prisma 7: a URL do banco vem de prisma.config.ts, não do schema.prisma.
+//
+// ATENÇÃO — dois gotchas:
+// 1. O campo correto é `datasource.url` (NÃO `datasourceUrl` — não existe em Prisma 7)
+// 2. O Prisma CLI não carrega .env automaticamente: o import abaixo é obrigatório
 
+import 'dotenv/config';
 import { defineConfig } from 'prisma/config';
 
 export default defineConfig({
-  datasourceUrl: process.env['DATABASE_URL'],
   earlyAccess: true,
   schema: 'prisma/schema.prisma',
+  datasource: {
+    url: process.env['DATABASE_URL'],
+  },
 });
 ```
 
@@ -195,12 +229,26 @@ npx prisma generate
 
 ```typescript
 // apps/auth-service/src/prisma/prisma.service.ts
+//
+// Prisma 7 "client" engine exige driver adapter — não aceita conexão direta
+// sem adapter (breaking change do Prisma 7).
+// @prisma/adapter-pg usa pg.Pool internamente (pool de conexões nativo Node.js).
+// Instalar antes: pnpm add @prisma/adapter-pg pg && pnpm add -D @types/pg
 
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Pool } from 'pg';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from './generated/index.js';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+  constructor() {
+    // DATABASE_URL já foi carregado pelo dotenv no main.ts
+    const pool = new Pool({ connectionString: process.env['DATABASE_URL'] });
+    const adapter = new PrismaPg(pool);
+    super({ adapter });
+  }
+
   async onModuleInit(): Promise<void> {
     await this.$connect();
   }
@@ -1015,6 +1063,31 @@ Adicionar ao `apps/auth-service/package.json`:
 
 A partir deste capítulo você tem um serviço HTTP real para testar. Salve o token retornado — ele será necessário em todos os próximos capítulos.
 
+### Pré-requisito: gerar e distribuir as chaves RSA
+
+Se ainda não fez o Passo 4.1b, rode agora:
+
+```bash
+make gen-keys
+```
+
+Ou manualmente, se preferir não usar o Makefile:
+
+```bash
+openssl genrsa -out /tmp/showpass_private.pem 4096 2>/dev/null
+openssl rsa -in /tmp/showpass_private.pem -pubout -out /tmp/showpass_public.pem 2>/dev/null
+
+PRIV=$(awk 'NF{printf "%s\\n", $0}' /tmp/showpass_private.pem)
+PUB=$(awk 'NF{printf "%s\\n", $0}' /tmp/showpass_public.pem)
+
+sed -i "s|JWT_PRIVATE_KEY=.*|JWT_PRIVATE_KEY=\"${PRIV}\"|" apps/auth-service/.env
+for svc in api-gateway auth-service event-service booking-service payment-service search-service; do
+  sed -i "s|JWT_PUBLIC_KEY=.*|JWT_PUBLIC_KEY=\"${PUB}\"|" apps/$svc/.env
+done
+```
+
+Sem esse passo, o auth-service não sobe — ele valida que `JWT_PRIVATE_KEY` está presente no `onModuleInit`.
+
 ### O que precisa estar rodando
 
 ```bash
@@ -1165,7 +1238,8 @@ O campo `organizerId` é o que o event-service usa para isolamento de dados por 
 
 | Biblioteca | Mudança |
 |---|---|
-| **Prisma 7** | `url` removido do `datasource` → usar `prisma.config.ts` com `defineConfig` |
+| **Prisma 7** | `url` removido do `datasource` → usar `prisma.config.ts` com `defineConfig({ datasource: { url: process.env['DATABASE_URL'] } })` |
+| **Prisma 7** | `new PrismaClient()` falha com "requires adapter or accelerateUrl" → instalar `@prisma/adapter-pg` + `pg` e passar no construtor |
 | **Prisma 7** | Campos opcionais retornam `string \| null` (não `undefined`) → usar `?? null` ao criar |
 | **Zod 4** | `z.string().email()` deprecated → `z.email()` |
 | **Zod 4** | `ZodSchema` deprecated → `ZodType` |

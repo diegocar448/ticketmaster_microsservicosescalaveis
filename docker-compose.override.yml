@@ -1,0 +1,33 @@
+# docker-compose.override.yml
+#
+# SOMENTE DESENVOLVIMENTO LOCAL — não usar em produção.
+# Docker Compose aplica este arquivo automaticamente junto com docker-compose.yml.
+#
+# Por que este arquivo existe:
+# A rede `data` tem `internal: true` no docker-compose.yml principal —
+# isso impede que o Docker faça port binding para o host (comportamento correto
+# em produção, onde nenhum banco deve ser acessível externamente).
+#
+# Em desenvolvimento, os serviços NestJS rodam NO HOST (não dentro do Docker)
+# e precisam conectar ao PostgreSQL e Redis via localhost. Sem este override,
+# `prisma migrate dev`, Prisma Studio e ferramentas de banco (DBeaver, TablePlus)
+# não conseguem conectar.
+#
+# Referência: https://docs.docker.com/compose/extends/
+
+services:
+  postgres:
+    # Adicionar à rede public para que o binding de porta funcione no host
+    # A rede data (internal) bloqueia port forwarding para fora do Docker
+    networks:
+      - public
+      - data
+    ports:
+      - "5432:5432"
+
+  redis:
+    networks:
+      - public
+      - data
+    ports:
+      - "6379:6379"

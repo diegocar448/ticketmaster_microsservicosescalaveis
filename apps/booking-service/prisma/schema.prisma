@@ -5,7 +5,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  // Prisma 7: url foi movida para prisma.config.ts (defineConfig)
 }
 
 model Buyer {
