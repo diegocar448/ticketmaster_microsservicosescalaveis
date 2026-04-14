@@ -1,0 +1,224 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/prisma/generated"  // não commitar — gerado no build
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Plans (SaaS tiers) ───────────────────────────────────────────────────────
+
+model Plan {
+  id   String @id @default(uuid()) @db.Uuid
+  name String @unique  // "free", "pro", "enterprise"
+  slug String @unique
+
+  // Limites e features por plano
+  maxActiveEvents  Int
+  maxVenues        Int
+  serviceFeePercent Decimal  @db.Decimal(5, 2)
+
+  hasAnalytics  Boolean @default(false)
+  hasApiAccess  Boolean @default(false)
+  hasWhiteLabel Boolean @default(false)
+
+  priceMonthly Decimal @db.Decimal(10, 2)
+  isVisible    Boolean @default(true)
+
+  organizers Organizer[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("plans")
+}
+
+// ─── Organizers ───────────────────────────────────────────────────────────────
+
+model Organizer {
+  id   String @id @default(uuid()) @db.Uuid
+  name String
+  slug String @unique
+
+  planId String @db.Uuid
+  plan   Plan   @relation(fields: [planId], references: [id])
+
+  stripeCustomerId String? @unique
+
+  planExpiresAt DateTime?
+  trialEndsAt   DateTime?
+
+  venues    Venue[]
+  events    Event[]
+  users     OrganizerUser[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("organizers")
+}
+
+model OrganizerUser {
+  id           String    @id @default(uuid()) @db.Uuid
+  organizerId  String    @db.Uuid
+  organizer    Organizer @relation(fields: [organizerId], references: [id])
+
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         String    @default("member")  // "owner", "admin", "member"
+
+  emailVerifiedAt DateTime?
+  lastLoginAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizerId, role])
+  @@map("organizer_users")
+}
+
+// ─── Venues ────────────────────────────────────────────────────────────────────
+
+model Venue {
+  id          String    @id @default(uuid()) @db.Uuid
+  organizerId String    @db.Uuid
+  organizer   Organizer @relation(fields: [organizerId], references: [id])
+
+  name      String
+  address   String
+  city      String
+  state     String    @db.Char(2)
+  zipCode   String    @db.Char(8)
+  latitude  Decimal   @db.Decimal(10, 7)
+  longitude Decimal   @db.Decimal(10, 7)
+  capacity  Int
+
+  sections Section[]
+  events   Event[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizerId])
+  @@map("venues")
+}
+
+model Section {
+  id      String @id @default(uuid()) @db.Uuid
+  venueId String @db.Uuid
+  venue   Venue  @relation(fields: [venueId], references: [id])
+
+  name        String
+  seatingType String  // "reserved" | "general_admission"
+  capacity    Int
+
+  seats         Seat[]
+  ticketBatches TicketBatch[]
+
+  @@index([venueId])
+  @@map("sections")
+}
+
+model Seat {
+  id        String  @id @default(uuid()) @db.Uuid
+  sectionId String  @db.Uuid
+  section   Section @relation(fields: [sectionId], references: [id])
+
+  row    String  // "A", "B", ..., "Z"
+  number Int     // 1, 2, 3, ...
+  type   String  @default("standard")  // "standard", "vip", "accessible"
+
+  // Coordenadas no mapa SVG (para renderização visual)
+  mapX Decimal? @db.Decimal(8, 2)
+  mapY Decimal? @db.Decimal(8, 2)
+
+  @@unique([sectionId, row, number])
+  @@index([sectionId])
+  @@map("seats")
+}
+
+// ─── Categories ───────────────────────────────────────────────────────────────
+
+model Category {
+  id   String @id @default(uuid()) @db.Uuid
+  name String @unique
+  slug String @unique
+  icon String?
+
+  events Event[]
+
+  @@map("categories")
+}
+
+// ─── Events ───────────────────────────────────────────────────────────────────
+
+model Event {
+  id          String    @id @default(uuid()) @db.Uuid
+  organizerId String    @db.Uuid
+  organizer   Organizer @relation(fields: [organizerId], references: [id])
+  venueId     String    @db.Uuid
+  venue       Venue     @relation(fields: [venueId], references: [id])
+  categoryId  String    @db.Uuid
+  category    Category  @relation(fields: [categoryId], references: [id])
+
+  title       String
+  slug        String  @unique
+  description String  @db.Text
+  status      String  @default("draft")
+
+  startAt DateTime
+  endAt   DateTime
+
+  // Colunas desnormalizadas para performance em listagens
+  // (evita JOIN com venue a cada query de listagem)
+  venueCity  String
+  venueState String
+
+  thumbnailUrl String?
+  ageRestriction Int?
+  maxTicketsPerOrder Int @default(4)
+
+  // Contadores desnormalizados — atualizados via Kafka events
+  // Evita COUNT(*) caro a cada request de disponibilidade
+  totalCapacity      Int @default(0)
+  soldCount          Int @default(0)
+  reservedCount      Int @default(0)
+
+  ticketBatches TicketBatch[]
+
+  publishedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([organizerId, status])
+  @@index([venueCity, status])
+  @@index([startAt, status])
+  @@map("events")
+}
+
+model TicketBatch {
+  id      String @id @default(uuid()) @db.Uuid
+  eventId String @db.Uuid
+  event   Event  @relation(fields: [eventId], references: [id])
+
+  // Seção específica deste lote (null = evento inteiro)
+  sectionId String?  @db.Uuid
+  section   Section? @relation(fields: [sectionId], references: [id])
+
+  name           String   // "Pista", "VIP", "Camarote"
+  price          Decimal  @db.Decimal(10, 2)
+  totalQuantity  Int
+  soldCount      Int      @default(0)
+  reservedCount  Int      @default(0)
+
+  saleStartAt DateTime
+  saleEndAt   DateTime
+
+  isVisible Boolean @default(true)
+
+  @@index([eventId])
+  @@map("ticket_batches")
+}

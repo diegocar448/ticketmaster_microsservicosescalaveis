@@ -6,12 +6,29 @@ import { z } from 'zod';
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
 export const OrderStatusSchema = z.enum([
-  'pending',    // aguardando pagamento
-  'paid',       // pago (Stripe confirmou)
-  'refunded',   // reembolsado
-  'failed',     // falhou
+  'pending',
+  'paid',
+  'failed',
+  'refunded',
+  'partially_refunded',
 ]);
 export type OrderStatus = z.infer<typeof OrderStatusSchema>;
+
+export const CreateOrderSchema = z.object({
+  reservationIds: z.array(z.uuid()).min(1),
+});
+export type CreateOrderDto = z.infer<typeof CreateOrderSchema>;
+
+export const OrderResponseSchema = z.object({
+  id: z.uuid(),
+  status: OrderStatusSchema,
+  total: z.number(),
+  checkoutUrl: z.url(),
+  expiresAt: z.coerce.date(),
+});
+
+export type OrderResponse = z.infer<typeof OrderResponseSchema>;
+
 
 // ─── Checkout ─────────────────────────────────────────────────────────────────
 

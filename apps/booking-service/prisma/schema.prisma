@@ -1,0 +1,66 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/prisma/generated"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Buyer {
+  id           String  @id @default(uuid()) @db.Uuid
+  name         String
+  email        String  @unique
+  passwordHash String
+  phone        String?
+
+  emailVerifiedAt DateTime?
+  lastLoginAt     DateTime?
+
+  reservations Reservation[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("buyers")
+}
+
+model Reservation {
+  id      String @id @default(uuid()) @db.Uuid
+  buyerId String @db.Uuid
+  buyer   Buyer  @relation(fields: [buyerId], references: [id])
+
+  // IDs de referência para o event-service
+  // (não há FK cross-service — integridade via eventos Kafka)
+  eventId       String @db.Uuid
+  organizerId   String @db.Uuid
+
+  status    String  @default("pending")
+  expiresAt DateTime
+
+  orderId String? @db.Uuid  // preenchido quando order é criada
+
+  items ReservationItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([buyerId, status])
+  @@index([eventId, status])
+  @@map("reservations")
+}
+
+model ReservationItem {
+  id            String      @id @default(uuid()) @db.Uuid
+  reservationId String      @db.Uuid
+  reservation   Reservation @relation(fields: [reservationId], references: [id])
+
+  ticketBatchId String  @db.Uuid
+  seatId        String? @db.Uuid  // null para general_admission
+
+  unitPrice Decimal @db.Decimal(10, 2)
+  quantity  Int     @default(1)
+
+  @@map("reservation_items")
+}

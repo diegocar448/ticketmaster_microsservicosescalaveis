@@ -36,10 +36,15 @@ packages/types/
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
+    "lint": "eslint src/",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
     "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0"
   }
 }
 ```

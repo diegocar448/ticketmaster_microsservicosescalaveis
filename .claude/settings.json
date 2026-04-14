@@ -11,7 +11,10 @@
       "Bash(awk '{print $5, $9}')",
       "Bash(pnpm list:*)",
       "Bash(pnpm info:*)",
-      "Bash(pnpm turbo:*)"
+      "Bash(pnpm turbo:*)",
+      "Bash(grep -v \"^\\\\s\\\\s[a-z].*:$\")",
+      "Bash(ls /home/diegocar448/projects/ticketmaster_microsserviçosescalaveis/*.env*)",
+      "Bash(ls /home/diegocar448/projects/ticketmaster_microsserviçosescalaveis/.env*)"
     ]
   },
   "hooks": {
