@@ -20,7 +20,7 @@
   "name": "@showpass/event-service",
   "version": "0.0.1",
   "scripts": {
-    "dev": "tsx watch src/main.ts",
+    "dev": "node --watch --loader @swc-node/register/esm src/main.ts",
     "build": "tsc --project tsconfig.build.json",
     "start": "node dist/main.js",
     "test": "jest",
@@ -28,9 +28,10 @@
     "type-check": "tsc --noEmit",
     "db:migrate": "prisma migrate deploy",
     "db:migrate:dev": "prisma migrate dev",
-    "db:seed": "tsx prisma/seed.ts",
+    "db:seed": "node --loader @swc-node/register/esm prisma/seed.ts",
     "db:studio": "prisma studio"
   },
+  "type": "module",
   "dependencies": {
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
@@ -44,9 +45,9 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@swc-node/register": "^1.10.0",
     "@types/node": "^22.0.0",
     "prisma": "^7.0.0",
-    "tsx": "^4.19.0",
     "typescript": "^6.0.0"
   }
 }
@@ -829,17 +830,21 @@ A partir daqui você cria o primeiro recurso de negócio real: venue + evento. V
 
 ```bash
 # Terminal 1 — infraestrutura
-docker compose up -d
+make infra-up
 
-# Terminal 2 — auth-service
-pnpm --filter auth-service run dev          # porta 3006
+# Migrations e seed do event-service (apenas na primeira vez)
+pnpm --filter @showpass/event-service run db:migrate
+pnpm --filter @showpass/event-service run db:seed     # popula categories e plans
 
-# Terminal 3 — event-service
-pnpm --filter event-service run db:generate
-pnpm --filter event-service run db:migrate
-pnpm --filter event-service run db:seed     # popula categories e plans
-pnpm --filter event-service run dev         # porta 3003
+# Terminal 2 — todos os serviços em background (auth + event + api-gateway)
+./scripts/dev.sh start
+
+# Ver status e logs
+./scripts/dev.sh status
+./scripts/dev.sh logs event-service   # tail -f do event-service
 ```
+
+> **Alternativa:** `make dev-services` é um alias para `./scripts/dev.sh start`.
 
 ### Preparar o token de organizer
 

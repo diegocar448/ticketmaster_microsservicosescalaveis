@@ -31,3 +31,20 @@ services:
       - data
     ports:
       - "6379:6379"
+
+  kafka:
+    # Porta 29092 para clientes no HOST (serviços NestJS em dev).
+    # Porta 9092 permanece para comunicação container-to-container (kafka-ui etc.).
+    #
+    # KAFKA_ADVERTISED_LISTENERS com dois listeners:
+    #   PLAINTEXT://kafka:9092       → containers (DNS kafka resolve dentro do Docker)
+    #   PLAINTEXT_HOST://localhost:29092 → host (NestJS rodando fora do Docker)
+    networks:
+      - public
+      - data
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT

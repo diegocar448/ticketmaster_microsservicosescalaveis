@@ -397,7 +397,7 @@ event-service:test:  Tests: 18 passed, 0 failed
 **2. Rodar apenas testes unitários do SeatLockService**
 
 ```bash
-pnpm --filter booking-service run test -- --testPathPattern="seat-lock"
+pnpm --filter @showpass/booking-service run test -- --testPathPattern="seat-lock"
 ```
 
 Como o Redis é mockado, este teste roda sem Docker:
@@ -413,7 +413,7 @@ PASS src/modules/locks/__tests__/seat-lock.service.spec.ts
 **3. Rodar o teste de concorrência (o mais importante)**
 
 ```bash
-pnpm --filter booking-service run test -- --testPathPattern="concurrency"
+pnpm --filter @showpass/booking-service run test -- --testPathPattern="concurrency"
 ```
 
 Este teste dispara 50 compradores simultâneos para o mesmo assento:
@@ -431,19 +431,19 @@ Se você ver `2 compradores adquiriram o lock` — há um bug de race condition.
 
 ```bash
 # Precisa dos serviços rodando
-pnpm --filter auth-service run dev &
-pnpm --filter event-service run dev &
-pnpm --filter api-gateway run dev &
-pnpm --filter web run dev &
+pnpm --filter @showpass/auth-service run dev &
+pnpm --filter @showpass/event-service run dev &
+pnpm --filter @showpass/api-gateway run dev &
+pnpm --filter @showpass/web run dev &
 
 # Rodar Playwright
-pnpm --filter web run test:e2e
+pnpm --filter @showpass/web run test:e2e
 ```
 
 O browser Chromium abre, faz login automaticamente, seleciona assentos e verifica o redirect para o checkout. Para ver o browser durante o teste:
 
 ```bash
-pnpm --filter web run test:e2e -- --headed
+pnpm --filter @showpass/web run test:e2e -- --headed
 ```
 
 **5. Rodar o load test com k6**
@@ -472,7 +472,7 @@ Se P95 > 500ms com apenas 1000 usuários, há um gargalo a investigar (normalmen
 **6. Ver cobertura de testes**
 
 ```bash
-pnpm --filter booking-service run test -- --coverage
+pnpm --filter @showpass/booking-service run test -- --coverage
 ```
 
 Abra `apps/booking-service/coverage/index.html` no browser para ver quais linhas não têm cobertura.

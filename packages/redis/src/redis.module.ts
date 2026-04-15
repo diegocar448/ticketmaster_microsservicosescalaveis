@@ -1,6 +1,9 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import Redis from 'ioredis';
-import { RedisService } from './redis.service';
+import { RedisService } from './redis.service.js';
+import { REDIS_CLIENT } from './redis.constants.js';
+
+export { REDIS_CLIENT } from './redis.constants.js';
 
 export interface RedisModuleOptions {
   host: string;
@@ -8,8 +11,6 @@ export interface RedisModuleOptions {
   password?: string;
   db?: number;
 }
-
-export const REDIS_CLIENT = 'REDIS_CLIENT';
 
 @Module({})
 // eslint-disable-next-line @typescript-eslint/no-extraneous-class -- padrão NestJS: módulos com forRoot() são classes estáticas por design

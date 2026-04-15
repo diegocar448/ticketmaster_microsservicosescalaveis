@@ -133,12 +133,12 @@ async function bootstrap(): Promise<void> {
       .build();
     const document = SwaggerModule.createDocument(app, config);
     SwaggerModule.setup('docs', app, document);
-    Logger.log('Swagger disponível em http://localhost:3001/docs');
+    Logger.log('Swagger disponível em http://localhost:3000/docs');
   }
 
-  const port = process.env.PORT ?? 3001;
+  const port = process.env['PORT'] ?? 3000;
   await app.listen(port);
-  Logger.log(`API Gateway rodando na porta ${port}`);
+  Logger.log(`API Gateway rodando na porta ${port.toString()}`);
 }
 
 void bootstrap();
@@ -613,7 +613,7 @@ export class LoggerMiddleware implements NestMiddleware {
 # apps/api-gateway/.env
 
 NODE_ENV=development
-PORT=3001
+PORT=3000
 
 # ── JWT (chave pública RSA — apenas verificação) ──────────────────────────────
 # Gerada com: openssl genrsa -out private.pem 4096 && openssl rsa -in private.pem -pubout -out public.pem

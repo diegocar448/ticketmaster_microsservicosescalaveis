@@ -705,13 +705,13 @@ curl -s http://localhost:9200/_cluster/health | jq .status
 # Aguardar retornar "yellow" ou "green"
 
 # Terminal 2 — auth-service
-pnpm --filter auth-service run dev
+pnpm --filter @showpass/auth-service run dev
 
 # Terminal 3 — event-service
-pnpm --filter event-service run dev
+pnpm --filter @showpass/event-service run dev
 
 # Terminal 4 — search-service
-pnpm --filter search-service run dev        # porta 3005
+pnpm --filter @showpass/search-service run dev        # porta 3005
 ```
 
 O Debezium começa a capturar mudanças do PostgreSQL automaticamente após subir.

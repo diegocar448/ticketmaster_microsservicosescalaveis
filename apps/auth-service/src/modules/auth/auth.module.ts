@@ -4,14 +4,12 @@
 //
 // Configuração JwtModule:
 //   - Algoritmo RS256 assimétrico (chave privada para assinar, pública para verificar)
-//   - Chave privada carregada do sistema de arquivos na inicialização
+//   - Chave privada lida de JWT_PRIVATE_KEY no .env (12-factor: config via env)
 //   - Audience e issuer para prevenir token confusion attacks
 
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { AuthController } from './auth.controller.js';
 import { OrganizerAuthService } from './organizer-auth.service.js';
 import { BuyerAuthService } from './buyer-auth.service.js';
@@ -19,11 +17,12 @@ import { TokenService } from './token.service.js';
 import { JwtStrategy } from './strategies/jwt.strategy.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 
-// Chave privada carregada uma vez na inicialização do módulo
-// Se o arquivo não existir → NestJS falha ao iniciar (desejável — fail fast)
-// __dirname disponível em CJS (NodeNext sem "type":"module" no package.json)
-// eslint-disable-next-line security/detect-non-literal-fs-filename -- caminho calculado em tempo de inicialização, não vem de input do usuário
-const privateKey = readFileSync(join(__dirname, '../../../keys/private.pem'));
+// Fail fast: se JWT_PRIVATE_KEY não estiver definida, o serviço não sobe.
+// dotenv carrega o .env antes deste módulo ser avaliado (ver main.ts).
+const privateKey = process.env['JWT_PRIVATE_KEY'];
+if (!privateKey) {
+  throw new Error('JWT_PRIVATE_KEY não definida — rode make gen-keys e verifique o .env');
+}
 
 @Module({
   imports: [

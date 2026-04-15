@@ -390,8 +390,8 @@ sudo mv grpcurl /usr/local/bin/
 **2. Subir os serviços com gRPC habilitado**
 
 ```bash
-pnpm --filter event-service run dev    # porta gRPC: 50051
-pnpm --filter booking-service run dev  # chama event-service via gRPC
+pnpm --filter @showpass/event-service run dev    # porta gRPC: 50051
+pnpm --filter @showpass/booking-service run dev  # chama event-service via gRPC
 ```
 
 **3. Listar serviços disponíveis via gRPC reflection**
@@ -459,7 +459,7 @@ As primeiras retornam `503 Service Unavailable`. Após 5 falhas, o circuit break
 **2. Restaurar o event-service e ver o circuit fechar**
 
 ```bash
-pnpm --filter event-service run dev
+pnpm --filter @showpass/event-service run dev
 ```
 
 Após ~30 segundos (janela de half-open), o circuit breaker testa uma request. Se bem-sucedida, fecha o circuito e o sistema volta ao normal.

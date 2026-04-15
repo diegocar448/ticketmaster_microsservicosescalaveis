@@ -314,7 +314,7 @@ docker compose --profile observability up -d
 
 # Subir os serviços com OpenTelemetry habilitado
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
-pnpm --filter booking-service run dev
+pnpm --filter @showpass/booking-service run dev
 ```
 
 ### Passo a passo

@@ -507,19 +507,19 @@ Este capítulo traz a primeira tela visualmente rica: a página do evento com o 
 docker compose up -d
 
 # Terminal 2 — auth-service
-pnpm --filter auth-service run dev          # porta 3006
+pnpm --filter @showpass/auth-service run dev          # porta 3006
 
 # Terminal 3 — event-service
-pnpm --filter event-service run dev         # porta 3003
+pnpm --filter @showpass/event-service run dev         # porta 3003
 
 # Terminal 4 — booking-service
-pnpm --filter booking-service run dev       # porta 3004
+pnpm --filter @showpass/booking-service run dev       # porta 3004
 
 # Terminal 5 — api-gateway
-pnpm --filter api-gateway run dev           # porta 3000
+pnpm --filter @showpass/api-gateway run dev           # porta 3000
 
 # Terminal 6 — frontend
-pnpm --filter web run dev                   # porta 3001
+pnpm --filter @showpass/web run dev                   # porta 3001
 ```
 
 ### Passo a passo no browser

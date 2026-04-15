@@ -703,19 +703,19 @@ O worker-service não tem endpoints HTTP públicos — ele processa mensagens Ka
 docker compose up -d
 
 # Terminal 2 — auth-service
-pnpm --filter auth-service run dev
+pnpm --filter @showpass/auth-service run dev
 
 # Terminal 3 — event-service
-pnpm --filter event-service run dev
+pnpm --filter @showpass/event-service run dev
 
 # Terminal 4 — booking-service
-pnpm --filter booking-service run dev
+pnpm --filter @showpass/booking-service run dev
 
 # Terminal 5 — payment-service
-pnpm --filter payment-service run dev
+pnpm --filter @showpass/payment-service run dev
 
 # Terminal 6 — worker-service
-pnpm --filter worker-service run dev        # sem porta HTTP pública
+pnpm --filter @showpass/worker-service run dev        # sem porta HTTP pública
 
 # Terminal 7 — Stripe CLI (para disparar o pagamento)
 stripe listen --forward-to http://localhost:3002/webhooks/stripe

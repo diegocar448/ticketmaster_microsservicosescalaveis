@@ -43,22 +43,19 @@ openssl rsa -in /tmp/showpass_private.pem -pubout -out /tmp/showpass_public.pem
 
 ### Passo 4.1b — Colocar as chaves nos `.env`
 
-Variáveis de ambiente não aceitam quebras de linha reais. As chaves precisam ser formatadas com `\n` literal em uma única linha:
+O dotenv interpreta `\n` (literal) dentro de aspas duplas como newline real. O script `scripts/gen-keys.py` faz isso automaticamente — ele gera as chaves, formata em single-line e distribui para todos os `.env`:
 
 ```bash
-# Formatar as chaves (substitui newlines por \n literal)
-PRIVATE_KEY=$(awk 'NF{printf "%s\\n", $0}' /tmp/showpass_private.pem)
-PUBLIC_KEY=$(awk 'NF{printf "%s\\n", $0}' /tmp/showpass_public.pem)
+# Gera par de chaves RSA 4096-bit e distribui para todos os serviços
+make gen-keys
+```
 
-# Inserir no .env do auth-service (chave privada — somente ele)
-sed -i "s|JWT_PRIVATE_KEY=.*|JWT_PRIVATE_KEY=\"${PRIVATE_KEY}\"|" apps/auth-service/.env
-sed -i "s|JWT_PUBLIC_KEY=.*|JWT_PUBLIC_KEY=\"${PUBLIC_KEY}\"|" apps/auth-service/.env
+> **Por que um script Python e não shell/awk?**
+> O comando `awk 'NF{printf "%s\\n", $0}'` parece correto mas produz newlines reais no shell — não o literal `\n`. O resultado é um `.env` com valor multiline que o dotenv lê como linha incompleta, deixando `JWT_PRIVATE_KEY` com apenas `"-----BEGIN PRIVATE KEY-----"`. O Python escreve o formato correto de forma portável.
 
-# Distribuir a chave pública para todos os serviços que validam JWT
-for svc in api-gateway event-service booking-service payment-service search-service; do
-  sed -i "s|JWT_PUBLIC_KEY=.*|JWT_PUBLIC_KEY=\"${PUBLIC_KEY}\"|" apps/$svc/.env
-  echo "✓ JWT_PUBLIC_KEY atualizada em apps/$svc/.env"
-done
+O formato gravado no `.env` é:
+```
+JWT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIJQg...\n-----END PRIVATE KEY-----\n"
 ```
 
 > **Por que todos os serviços precisam da chave pública?**
@@ -67,7 +64,7 @@ done
 **Verificar que funcionou:**
 
 ```bash
-# A chave no .env deve começar com -----BEGIN PUBLIC KEY-----
+# A chave no .env deve ser single-line com \n literal
 grep "JWT_PUBLIC_KEY" apps/event-service/.env | head -c 80
 ```
 
@@ -273,8 +270,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 
 export interface JwtPayload {
   sub: string;           // user ID
@@ -288,8 +283,12 @@ export interface JwtPayload {
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor() {
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- caminho fixo, não vem de input do usuário
-    const publicKey = readFileSync(join(__dirname, '../../../../keys/public.pem'));
+    // Fail fast: se JWT_PUBLIC_KEY não estiver definida, o serviço não sobe.
+    // dotenv carregado em main.ts garante que process.env já tem o valor aqui.
+    const publicKey = process.env['JWT_PUBLIC_KEY'];
+    if (!publicKey) {
+      throw new Error('JWT_PUBLIC_KEY não definida — rode make gen-keys e verifique o .env');
+    }
 
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -306,8 +305,6 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   }
 }
 ```
-
-> **Nota:** Com `module: "NodeNext"` e `package.json` sem `"type": "module"`, os arquivos `.ts` compilam para CommonJS. O `__dirname` está disponível como global — não usar `import.meta.url`.
 
 ---
 
@@ -933,8 +930,6 @@ export class ZodValidationPipe<T> implements PipeTransform {
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { AuthController } from './auth.controller.js';
 import { OrganizerAuthService } from './organizer-auth.service.js';
 import { BuyerAuthService } from './buyer-auth.service.js';
@@ -942,8 +937,12 @@ import { TokenService } from './token.service.js';
 import { JwtStrategy } from './strategies/jwt.strategy.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 
-// eslint-disable-next-line security/detect-non-literal-fs-filename
-const privateKey = readFileSync(join(__dirname, '../../../keys/private.pem'));
+// Fail fast: se JWT_PRIVATE_KEY não estiver definida, o serviço não sobe.
+// dotenv carregado em main.ts garante que process.env já tem o valor aqui.
+const privateKey = process.env['JWT_PRIVATE_KEY'];
+if (!privateKey) {
+  throw new Error('JWT_PRIVATE_KEY não definida — rode make gen-keys e verifique o .env');
+}
 
 @Module({
   imports: [
@@ -984,6 +983,7 @@ export class AppModule {}
 ```typescript
 // apps/auth-service/src/main.ts
 
+import 'dotenv/config';   // deve ser o PRIMEIRO import — carrega .env antes de qualquer módulo
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
@@ -1071,33 +1071,24 @@ Se ainda não fez o Passo 4.1b, rode agora:
 make gen-keys
 ```
 
-Ou manualmente, se preferir não usar o Makefile:
-
-```bash
-openssl genrsa -out /tmp/showpass_private.pem 4096 2>/dev/null
-openssl rsa -in /tmp/showpass_private.pem -pubout -out /tmp/showpass_public.pem 2>/dev/null
-
-PRIV=$(awk 'NF{printf "%s\\n", $0}' /tmp/showpass_private.pem)
-PUB=$(awk 'NF{printf "%s\\n", $0}' /tmp/showpass_public.pem)
-
-sed -i "s|JWT_PRIVATE_KEY=.*|JWT_PRIVATE_KEY=\"${PRIV}\"|" apps/auth-service/.env
-for svc in api-gateway auth-service event-service booking-service payment-service search-service; do
-  sed -i "s|JWT_PUBLIC_KEY=.*|JWT_PUBLIC_KEY=\"${PUB}\"|" apps/$svc/.env
-done
-```
-
-Sem esse passo, o auth-service não sobe — ele valida que `JWT_PRIVATE_KEY` está presente no `onModuleInit`.
+Sem esse passo, o auth-service não sobe — ele valida que `JWT_PRIVATE_KEY` está presente ao inicializar o módulo.
 
 ### O que precisa estar rodando
 
 ```bash
-# Terminal 1 — infraestrutura
-docker compose up -d
+# 1. Infraestrutura Docker
+make infra-up
 
-# Terminal 2 — auth-service
-pnpm --filter auth-service run db:generate
-pnpm --filter auth-service run db:migrate   # cria as tabelas
-pnpm --filter auth-service run dev          # porta 3006
+# 2. Migrations e seed (primeira vez)
+pnpm --filter @showpass/auth-service run db:generate
+pnpm --filter @showpass/auth-service run db:migrate
+pnpm --filter @showpass/auth-service run db:seed   # popula plans (free/pro/enterprise)
+
+# 3. Subir o serviço
+pnpm --filter @showpass/auth-service run dev        # porta 3006
+
+# Ou usar o script que inicia auth + event + gateway de uma vez:
+./scripts/dev.sh
 ```
 
 Opcionalmente, suba o gateway para testar o fluxo completo via proxy:
@@ -1240,6 +1231,8 @@ O campo `organizerId` é o que o event-service usa para isolamento de dados por 
 |---|---|
 | **Prisma 7** | `url` removido do `datasource` → usar `prisma.config.ts` com `defineConfig({ datasource: { url: process.env['DATABASE_URL'] } })` |
 | **Prisma 7** | `new PrismaClient()` falha com "requires adapter or accelerateUrl" → instalar `@prisma/adapter-pg` + `pg` e passar no construtor |
+| **NestJS + dotenv** | `auth.module.ts` avalia `process.env['JWT_PRIVATE_KEY']` antes do bootstrap → `import 'dotenv/config'` deve ser o **primeiro** import de `main.ts` |
+| **auth.module.ts** | `readFileSync('.../keys/private.pem')` falha se o arquivo não existir → usar `process.env['JWT_PRIVATE_KEY']` (set pelo `make gen-keys`) |
 | **Prisma 7** | Campos opcionais retornam `string \| null` (não `undefined`) → usar `?? null` ao criar |
 | **Zod 4** | `z.string().email()` deprecated → `z.email()` |
 | **Zod 4** | `ZodSchema` deprecated → `ZodType` |

@@ -22,7 +22,9 @@
       "Bash(node -e \"const {defineConfig, env} = require\\('/home/diegocar448/projects/ticketmaster_microsserviçosescalaveis/apps/auth-service/node_modules/@prisma/config'\\); console.log\\('env:', typeof env\\); console.log\\('env.toString:', env.toString\\(\\).slice\\(0,300\\)\\)\")",
       "Bash(DEBUG=\"prisma:config*\" pnpm run db:generate)",
       "Bash(cat)",
-      "Bash(bash /tmp/test_migrate.sh)"
+      "Bash(bash /tmp/test_migrate.sh)",
+      "Bash(kill 94001)",
+      "Bash(chmod +x /home/diegocar448/projects/ticketmaster_microsserviçosescalaveis/scripts/dev.sh)"
     ]
   },
   "hooks": {

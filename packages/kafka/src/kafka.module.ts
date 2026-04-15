@@ -4,7 +4,7 @@
 
 import { DynamicModule, Module } from '@nestjs/common';
 import { ClientsModule, Transport } from '@nestjs/microservices';
-import { KafkaProducerService } from './kafka-producer.service';
+import { KafkaProducerService } from './kafka-producer.service.js';
 
 export interface KafkaModuleOptions {
   clientId: string;
@@ -45,6 +45,7 @@ export class KafkaModule {
       ],
       providers: [KafkaProducerService],
       exports: [KafkaProducerService, ClientsModule],
+      global: true,  // KafkaProducerService disponível em todos os módulos sem reimportar
     };
   }
 }

@@ -241,12 +241,12 @@ O dashboard de organizador é a visão de admin do produto. Você vai verificar 
 
 ```bash
 docker compose up -d
-pnpm --filter auth-service run dev
-pnpm --filter event-service run dev
-pnpm --filter booking-service run dev
-pnpm --filter payment-service run dev
-pnpm --filter api-gateway run dev
-pnpm --filter web run dev
+pnpm --filter @showpass/auth-service run dev
+pnpm --filter @showpass/event-service run dev
+pnpm --filter @showpass/booking-service run dev
+pnpm --filter @showpass/payment-service run dev
+pnpm --filter @showpass/api-gateway run dev
+pnpm --filter @showpass/web run dev
 ```
 
 ### Passo a passo no browser

@@ -2,6 +2,7 @@
 // Ponto de entrada do API Gateway.
 // Configura Helmet (OWASP A05), CORS, filtros globais e Swagger (dev only).
 
+import 'dotenv/config';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
@@ -73,10 +74,10 @@ async function bootstrap(): Promise<void> {
       .build();
     const document = SwaggerModule.createDocument(app, config);
     SwaggerModule.setup('docs', app, document);
-    Logger.log('Swagger disponível em http://localhost:3001/docs');
+    Logger.log('Swagger disponível em http://localhost:3000/docs');
   }
 
-  const port = process.env['PORT'] ?? 3001;
+  const port = process.env['PORT'] ?? 3000;
   await app.listen(port);
   Logger.log(`API Gateway rodando na porta ${port.toString()}`);
 }

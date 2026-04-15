@@ -15,6 +15,19 @@
 dev: infra-up
 	pnpm run dev
 
+# Inicia apenas os serviços implementados no capítulo atual (sem web/worker/etc)
+dev-services:
+	@bash scripts/dev.sh start
+
+dev-stop:
+	@bash scripts/dev.sh stop
+
+dev-status:
+	@bash scripts/dev.sh status
+
+dev-logs:
+	@bash scripts/dev.sh logs
+
 # Somente infraestrutura (postgres, redis, kafka, elasticsearch)
 # Os serviços NestJS/Next.js rodam diretamente com pnpm (hot reload nativo)
 infra-up:
@@ -39,6 +52,7 @@ db-migrate:
 
 # Seed inicial (planos, categorias, usuário admin)
 db-seed:
+	pnpm --filter @showpass/auth-service  run db:seed
 	pnpm --filter @showpass/event-service run db:seed
 
 # Abre o Prisma Studio para um serviço específico
@@ -105,15 +119,7 @@ gen-keys:
 	@echo "🔑 Gerando par de chaves RSA 4096-bit para o auth-service..."
 	@openssl genrsa -out /tmp/showpass_private.pem 4096 2>/dev/null
 	@openssl rsa -in /tmp/showpass_private.pem -pubout -out /tmp/showpass_public.pem 2>/dev/null
-	@PRIVATE_KEY=$$(awk 'NF{printf "%s\\n", $$0}' /tmp/showpass_private.pem); \
-	 PUBLIC_KEY=$$(awk 'NF{printf "%s\\n", $$0}' /tmp/showpass_public.pem); \
-	 sed -i "s|^JWT_PRIVATE_KEY=.*|JWT_PRIVATE_KEY=$$PRIVATE_KEY|" apps/auth-service/.env; \
-	 sed -i "s|^JWT_PUBLIC_KEY=.*|JWT_PUBLIC_KEY=$$PUBLIC_KEY|" apps/auth-service/.env; \
-	 for svc in api-gateway booking-service payment-service search-service worker-service web; do \
-	   if [ -f "apps/$$svc/.env" ]; then \
-	     sed -i "s|^JWT_PUBLIC_KEY=.*|JWT_PUBLIC_KEY=$$PUBLIC_KEY|" "apps/$$svc/.env"; \
-	   fi; \
-	 done
+	@python3 scripts/gen-keys.py
 	@rm -f /tmp/showpass_private.pem /tmp/showpass_public.pem
 	@echo "✅ Chaves RSA geradas e distribuídas para todos os serviços"
 
