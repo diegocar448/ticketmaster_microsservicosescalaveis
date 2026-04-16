@@ -11,8 +11,6 @@
 import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 
 export interface JwtPayload {
   sub: string;           // user ID
@@ -26,10 +24,12 @@ export interface JwtPayload {
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor() {
-    // Tentar carregar chave pública — se não existir, lançar erro na inicialização
-    // (melhor falhar cedo do que aceitar tokens sem verificação)
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- caminho calculado em tempo de inicialização, não vem de input do usuário
-    const publicKey = readFileSync(join(__dirname, '../../../../keys/public.pem'));
+    // Fail fast: se JWT_PUBLIC_KEY não estiver definida, o serviço não sobe.
+    // dotenv carregado em main.ts garante que process.env já tem o valor aqui.
+    const publicKey = process.env['JWT_PUBLIC_KEY'];
+    if (!publicKey) {
+      throw new Error('JWT_PUBLIC_KEY não definida — rode make gen-keys e verifique o .env');
+    }
 
     super({
       // Extrair token do header Authorization: Bearer <token>

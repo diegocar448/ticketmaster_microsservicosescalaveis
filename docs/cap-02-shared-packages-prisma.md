@@ -1185,10 +1185,10 @@ Antes de prosseguir para o Cap 03, garanta que os schemas Prisma compilam:
 ```bash
 # Rode a partir da raiz do monorepo
 docker compose up -d  # PostgreSQL precisa estar rodando
-pnpm --filter event-service run db:generate
-pnpm --filter auth-service run db:generate
-pnpm --filter booking-service run db:generate
-pnpm --filter payment-service run db:generate
+pnpm --filter @showpass/event-service run db:generate
+pnpm --filter @showpass/auth-service run db:generate
+pnpm --filter @showpass/booking-service run db:generate
+pnpm --filter @showpass/payment-service run db:generate
 ```
 
 Se tudo correu bem, você verá a pasta `src/prisma/generated/` criada dentro de cada serviço.

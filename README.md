@@ -209,21 +209,70 @@ pnpm install
 # Subir infra (PostgreSQL 18, Redis 8, Kafka 4.2, Elasticsearch 9)
 make infra-up
 
+# Gerar par de chaves RSA 4096-bit para JWT (apenas na primeira vez)
+make gen-keys
+
 # Rodar migrations em todos os serviços
 make db-migrate
 
-# Seed inicial (planos, categorias, usuário admin)
+# Seed inicial (planos, categorias)
 make db-seed
 
-# Iniciar todos os serviços em modo watch
-make dev
+# Iniciar os serviços do capítulo atual em background
+./scripts/dev.sh
+```
 
-# URLs disponíveis:
-# Frontend:     http://localhost:3000
-# API Gateway:  http://localhost:3001
-# Swagger UI:   http://localhost:3001/docs
-# Kafka UI:     http://localhost:8080
-# Grafana:      http://localhost:3002
+### URLs disponíveis
+
+| Serviço | URL |
+|---------|-----|
+| API Gateway | http://localhost:3000 |
+| Swagger UI | http://localhost:3000/docs |
+| Auth Service (direto) | http://localhost:3006 |
+| Event Service (direto) | http://localhost:3003 |
+| Kafka UI | http://localhost:8080 |
+
+### Comandos do dia a dia
+
+```bash
+./scripts/dev.sh              # inicia auth + event + api-gateway
+./scripts/dev.sh stop         # para todos os serviços
+./scripts/dev.sh status       # mostra o que está rodando
+./scripts/dev.sh logs         # últimas linhas de cada serviço
+./scripts/dev.sh logs auth-service   # tail -f de um serviço específico
+
+make dev-services   # alias para ./scripts/dev.sh
+make dev-stop       # para todos
+make dev-status     # status
+make infra-up       # sobe apenas postgres, redis, kafka, elasticsearch
+make infra-down     # para a infra Docker
+make db-migrate     # roda migrations em todos os serviços
+make db-seed        # popula planos e categorias
+make gen-keys       # re-gera par de chaves RSA (se precisar trocar)
+```
+
+### Testando via curl
+
+```bash
+# Registrar organizer
+curl -s -X POST http://localhost:3000/auth/organizers/register \
+  -H "Content-Type: application/json" \
+  -d '{"name":"João","email":"joao@ex.com","password":"Senha123","organizationName":"Empresa"}'
+# Retorna: { "accessToken": "eyJ...", "expiresIn": 900 }
+
+# Login
+curl -s -X POST http://localhost:3000/auth/organizers/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"joao@ex.com","password":"Senha123"}'
+
+# Listar eventos (público, sem JWT)
+curl -s http://localhost:3000/events | jq .
+
+# Criar evento (requer JWT)
+curl -s -X POST http://localhost:3000/events \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <accessToken>" \
+  -d '{ ... }'
 ```
 
 ---

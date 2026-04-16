@@ -4,10 +4,20 @@
 // Plans SaaS, Categories, e Organizer de exemplo.
 //
 // Usar upsert em vez de create: idempotente — pode rodar múltiplas vezes.
+//
+// import 'dotenv/config' deve vir antes do PrismaClient — carrega DATABASE_URL
+// do .env antes que o cliente tente conectar.
 
+import 'dotenv/config';
+import { Pool } from 'pg';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../src/prisma/generated/index.js';
 
-const prisma = new PrismaClient();
+// Prisma 7: "client" engine exige driver adapter.
+// dotenv/config carrega DATABASE_URL do .env antes de criar o Pool.
+const pool = new Pool({ connectionString: process.env['DATABASE_URL'] });
+const adapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter });
 
 async function main(): Promise<void> {
   // ─── Plans (tiers SaaS) ────────────────────────────────────────────────────
@@ -86,4 +96,5 @@ main()
   .catch(console.error)
   .finally(() => {
     void prisma.$disconnect();
+    void pool.end();
   });

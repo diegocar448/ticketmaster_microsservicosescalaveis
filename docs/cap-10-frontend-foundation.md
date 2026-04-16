@@ -557,7 +557,7 @@ export default function LoginPage(): JSX.Element {
     setError(null);
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/login`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/buyers/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
@@ -649,13 +649,13 @@ Este é o primeiro capítulo com interface visual no browser. Você vai ver o fl
 docker compose up -d
 
 # Terminal 2 — auth-service
-pnpm --filter auth-service run dev          # porta 3006
+pnpm --filter @showpass/auth-service run dev          # porta 3006
 
 # Terminal 3 — api-gateway
-pnpm --filter api-gateway run dev           # porta 3000
+pnpm --filter @showpass/api-gateway run dev           # porta 3000
 
 # Terminal 4 — frontend
-pnpm --filter web run dev                   # porta 3001
+pnpm --filter @showpass/web run dev                   # porta 3001
 ```
 
 ### Passo a passo no browser

@@ -3,6 +3,7 @@
 // Responsável por emissão de JWT RS256 e refresh token rotation.
 // ATENÇÃO: ver apps/auth-service/CLAUDE.md antes de qualquer alteração.
 
+import 'dotenv/config';   // deve ser o PRIMEIRO import — carrega .env antes de qualquer módulo
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';

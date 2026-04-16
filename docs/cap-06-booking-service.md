@@ -275,8 +275,8 @@ import {
   ConflictException,
   Logger,
 } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
-import { SeatLockService } from '../locks/seat-lock.service';
+import { PrismaService } from '../../prisma/prisma.service.js';
+import { SeatLockService } from '../locks/seat-lock.service.js';
 import { KafkaProducerService } from '@showpass/kafka';
 import { KAFKA_TOPICS } from '@showpass/types';
 import type { CreateReservationDto } from '@showpass/types';
@@ -525,7 +525,7 @@ export class ReservationsService {
 
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { PrismaService } from '../../prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service.js';
 import { KafkaProducerService } from '@showpass/kafka';
 import { KAFKA_TOPICS } from '@showpass/types';
 
@@ -634,11 +634,11 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { ReservationsService } from './reservations.service';
-import { SeatLockService } from '../locks/seat-lock.service';
-import { BuyerGuard } from '../../common/guards/buyer.guard';
+import { ReservationsService } from './reservations.service.js';
+import { SeatLockService } from '../locks/seat-lock.service.js';
+import { BuyerGuard } from '../../common/guards/buyer.guard.js';
 import { CurrentUser, type AuthenticatedUser } from '@showpass/types';
-import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { CreateReservationSchema, type CreateReservationDto } from '@showpass/types';
 
 @Controller('bookings/reservations')
@@ -746,15 +746,15 @@ Este é o capítulo mais importante para testar: você vai ver o Redis SETNX em 
 docker compose up -d
 
 # Terminal 2 — auth-service
-pnpm --filter auth-service run dev          # porta 3006
+pnpm --filter @showpass/auth-service run dev          # porta 3006
 
 # Terminal 3 — event-service
-pnpm --filter event-service run dev         # porta 3003
+pnpm --filter @showpass/event-service run dev         # porta 3003
 
 # Terminal 4 — booking-service
-pnpm --filter booking-service run db:generate
-pnpm --filter booking-service run db:migrate
-pnpm --filter booking-service run dev       # porta 3004
+pnpm --filter @showpass/booking-service run db:generate
+pnpm --filter @showpass/booking-service run db:migrate
+pnpm --filter @showpass/booking-service run dev       # porta 3004
 ```
 
 ### Preparação — obter tokens e IDs

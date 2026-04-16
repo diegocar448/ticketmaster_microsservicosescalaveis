@@ -2,6 +2,7 @@
 // Ponto de entrada do API Gateway.
 // Configura Helmet (OWASP A05), CORS, filtros globais e Swagger (dev only).
 
+import 'dotenv/config';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
@@ -17,6 +18,12 @@ async function bootstrap(): Promise<void> {
       process.env['NODE_ENV'] === 'production'
         ? ['error', 'warn']
         : ['log', 'debug', 'error', 'warn'],
+
+    // CRÍTICO: desabilitar body parser do NestJS.
+    // O API Gateway apenas faz proxy — não lê o body das requests.
+    // Se o NestJS parsear o body antes, o stream chega vazio ao http-proxy-middleware
+    // e a request fica travada esperando dados que nunca chegam (timeout).
+    bodyParser: false,
   });
 
   // ─── OWASP A05: Security Headers via Helmet ─────────────────────────────────
@@ -73,10 +80,10 @@ async function bootstrap(): Promise<void> {
       .build();
     const document = SwaggerModule.createDocument(app, config);
     SwaggerModule.setup('docs', app, document);
-    Logger.log('Swagger disponível em http://localhost:3001/docs');
+    Logger.log('Swagger disponível em http://localhost:3000/docs');
   }
 
-  const port = process.env['PORT'] ?? 3001;
+  const port = process.env['PORT'] ?? 3000;
   await app.listen(port);
   Logger.log(`API Gateway rodando na porta ${port.toString()}`);
 }

@@ -49,7 +49,7 @@ ASSÍNCRONO (correto):
 import { Injectable, Logger } from '@nestjs/common';
 import { createHmac, randomUUID } from 'crypto';
 import QRCode from 'qrcode';
-import { PrismaService } from '../../prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service.js';
 
 export interface TicketData {
   ticketId: string;
@@ -211,7 +211,7 @@ export class TicketGeneratorService {
 
 import { Injectable, Logger } from '@nestjs/common';
 import puppeteer from 'puppeteer';
-import type { TicketData } from './ticket-generator.service';
+import type { TicketData } from './ticket-generator.service.js';
 
 @Injectable()
 export class PdfGeneratorService {
@@ -367,10 +367,10 @@ export class PdfGeneratorService {
 import { Controller, Logger } from '@nestjs/common';
 import { EventPattern, Payload, Ctx, KafkaContext } from '@nestjs/microservices';
 import { KAFKA_TOPICS, PaymentConfirmedEventSchema, type PaymentConfirmedEvent } from '@showpass/types';
-import { TicketGeneratorService } from './ticket-generator.service';
-import { PdfGeneratorService } from './pdf-generator.service';
-import { EmailService } from '../email/email.service';
-import { PrismaService } from '../../prisma/prisma.service';
+import { TicketGeneratorService } from './ticket-generator.service.js';
+import { PdfGeneratorService } from './pdf-generator.service.js';
+import { EmailService } from '../email/email.service.js';
+import { PrismaService } from '../../prisma/prisma.service.js';
 import { randomUUID } from 'crypto';
 
 @Controller()
@@ -547,7 +547,7 @@ export class PaymentConfirmedConsumer {
 
 import { Controller, Logger } from '@nestjs/common';
 import { EventPattern, Payload } from '@nestjs/microservices';
-import { PrismaService } from '../../prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service.js';
 
 @Controller()
 export class DlqConsumer {
@@ -703,19 +703,19 @@ O worker-service não tem endpoints HTTP públicos — ele processa mensagens Ka
 docker compose up -d
 
 # Terminal 2 — auth-service
-pnpm --filter auth-service run dev
+pnpm --filter @showpass/auth-service run dev
 
 # Terminal 3 — event-service
-pnpm --filter event-service run dev
+pnpm --filter @showpass/event-service run dev
 
 # Terminal 4 — booking-service
-pnpm --filter booking-service run dev
+pnpm --filter @showpass/booking-service run dev
 
 # Terminal 5 — payment-service
-pnpm --filter payment-service run dev
+pnpm --filter @showpass/payment-service run dev
 
 # Terminal 6 — worker-service
-pnpm --filter worker-service run dev        # sem porta HTTP pública
+pnpm --filter @showpass/worker-service run dev        # sem porta HTTP pública
 
 # Terminal 7 — Stripe CLI (para disparar o pagamento)
 stripe listen --forward-to http://localhost:3002/webhooks/stripe

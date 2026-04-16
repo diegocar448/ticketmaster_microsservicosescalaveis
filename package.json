@@ -11,6 +11,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
+    "@swc-node/register": "^1.11.1",
+    "@swc/core": "^1.15.26",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",
@@ -30,5 +32,8 @@
       "tar": ">=7.5.11"
     }
   },
-  "packageManager": "pnpm@9.15.0"
+  "packageManager": "pnpm@9.15.0",
+  "dependencies": {
+    "dotenv": "^17.4.2"
+  }
 }

@@ -20,7 +20,7 @@
   "name": "@showpass/event-service",
   "version": "0.0.1",
   "scripts": {
-    "dev": "tsx watch src/main.ts",
+    "dev": "node --watch --loader @swc-node/register/esm src/main.ts",
     "build": "tsc --project tsconfig.build.json",
     "start": "node dist/main.js",
     "test": "jest",
@@ -28,9 +28,10 @@
     "type-check": "tsc --noEmit",
     "db:migrate": "prisma migrate deploy",
     "db:migrate:dev": "prisma migrate dev",
-    "db:seed": "tsx prisma/seed.ts",
+    "db:seed": "node --loader @swc-node/register/esm prisma/seed.ts",
     "db:studio": "prisma studio"
   },
+  "type": "module",
   "dependencies": {
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
@@ -44,9 +45,9 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@swc-node/register": "^1.10.0",
     "@types/node": "^22.0.0",
     "prisma": "^7.0.0",
-    "tsx": "^4.19.0",
     "typescript": "^6.0.0"
   }
 }
@@ -629,10 +630,18 @@ export class EventsController {
 //
 // Popula o banco com dados iniciais para desenvolvimento.
 // Plans, Categories, e um Organizer de exemplo.
+//
+// import 'dotenv/config' deve vir antes do PrismaClient — carrega DATABASE_URL do .env.
+// Prisma 7 "client" engine exige driver adapter (@prisma/adapter-pg).
 
-import { PrismaClient } from '../src/prisma/generated';
+import 'dotenv/config';
+import { Pool } from 'pg';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { PrismaClient } from '../src/prisma/generated/index.js';
 
-const prisma = new PrismaClient();
+const pool = new Pool({ connectionString: process.env['DATABASE_URL'] });
+const adapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter });
 
 async function main(): Promise<void> {
   // ─── Plans (SaaS tiers) ────────────────────────────────────────────────────
@@ -821,17 +830,21 @@ A partir daqui você cria o primeiro recurso de negócio real: venue + evento. V
 
 ```bash
 # Terminal 1 — infraestrutura
-docker compose up -d
+make infra-up
 
-# Terminal 2 — auth-service
-pnpm --filter auth-service run dev          # porta 3006
+# Migrations e seed do event-service (apenas na primeira vez)
+pnpm --filter @showpass/event-service run db:migrate
+pnpm --filter @showpass/event-service run db:seed     # popula categories e plans
 
-# Terminal 3 — event-service
-pnpm --filter event-service run db:generate
-pnpm --filter event-service run db:migrate
-pnpm --filter event-service run db:seed     # popula categories e plans
-pnpm --filter event-service run dev         # porta 3003
+# Terminal 2 — todos os serviços em background (auth + event + api-gateway)
+./scripts/dev.sh start
+
+# Ver status e logs
+./scripts/dev.sh status
+./scripts/dev.sh logs event-service   # tail -f do event-service
 ```
+
+> **Alternativa:** `make dev-services` é um alias para `./scripts/dev.sh start`.
 
 ### Preparar o token de organizer
 
@@ -1014,7 +1027,8 @@ Resposta esperada: `403 Forbidden` ou `404 Not Found` — o segundo organizer n�
 
 | # | Problema | Causa | Correção |
 |---|----------|-------|---------|
-| 1 | `url = env("DATABASE_URL")` no schema.prisma | Prisma 7 removeu `url` do datasource block | Criar `prisma.config.ts` com `defineConfig({ datasourceUrl: ... })` |
+| 1 | `url = env("DATABASE_URL")` no schema.prisma | Prisma 7 removeu `url` do datasource block | Criar `prisma.config.ts` com `defineConfig({ datasource: { url: process.env['DATABASE_URL'] } })` e `import 'dotenv/config'` no topo |
+| 1b | `new PrismaClient()` falha com "requires adapter or accelerateUrl" | Prisma 7 "client" engine exige driver adapter | Instalar `@prisma/adapter-pg` + `pg`; passar `new Pool` + `new PrismaPg` no construtor |
 | 2 | `import { PrismaClient } from '../src/prisma/generated'` no seed | Extensão `.js` obrigatória em NodeNext | Usar `from '../src/prisma/generated/index.js'` |
 | 3 | `thumbnailUrl: dto.thumbnailUrl` causa TS2375 | Prisma espera `string \| null`, Zod retorna `string \| undefined` | Usar `dto.thumbnailUrl ?? null` (converte undefined → null) |
 | 4 | `TRANSITIONS[from]` dispara `security/detect-object-injection` | Regra OWASP A03 detecta acesso dinâmico a objeto | Extrair para variável com `eslint-disable-next-line` documentado |

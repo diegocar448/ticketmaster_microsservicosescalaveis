@@ -11,14 +11,14 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 // Em produção, as URLs vêm de variáveis de ambiente (service discovery via DNS interno do K8s)
 const SERVICE_MAP: Record<string, string> = {
   '/auth':        process.env['AUTH_SERVICE_URL']    ?? 'http://localhost:3006',
-  '/events':      process.env['EVENT_SERVICE_URL']   ?? 'http://localhost:3002',
-  '/venues':      process.env['EVENT_SERVICE_URL']   ?? 'http://localhost:3002',
-  '/organizers':  process.env['EVENT_SERVICE_URL']   ?? 'http://localhost:3002',
-  '/bookings':    process.env['BOOKING_SERVICE_URL'] ?? 'http://localhost:3003',
-  '/payments':    process.env['PAYMENT_SERVICE_URL'] ?? 'http://localhost:3004',
+  '/events':      process.env['EVENT_SERVICE_URL']   ?? 'http://localhost:3003',
+  '/venues':      process.env['EVENT_SERVICE_URL']   ?? 'http://localhost:3003',
+  '/organizers':  process.env['EVENT_SERVICE_URL']   ?? 'http://localhost:3003',
+  '/bookings':    process.env['BOOKING_SERVICE_URL'] ?? 'http://localhost:3004',
+  '/payments':    process.env['PAYMENT_SERVICE_URL'] ?? 'http://localhost:3002',
   '/search':      process.env['SEARCH_SERVICE_URL']  ?? 'http://localhost:3005',
   '/tickets':     process.env['WORKER_SERVICE_URL']  ?? 'http://localhost:3007',
-  '/webhooks':    process.env['PAYMENT_SERVICE_URL'] ?? 'http://localhost:3004',
+  '/webhooks':    process.env['PAYMENT_SERVICE_URL'] ?? 'http://localhost:3002',
 };
 
 @Controller()

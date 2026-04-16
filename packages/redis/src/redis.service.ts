@@ -2,8 +2,9 @@
 // Inclui suporte a Lua scripts (necessário para operações atômicas).
 
 import { Inject, Injectable } from '@nestjs/common';
-import Redis from 'ioredis';
-import { REDIS_CLIENT } from './redis.module';
+// Named import pelo mesmo motivo do redis.module.ts — ioredis é CJS
+import { Redis } from 'ioredis';
+import { REDIS_CLIENT } from './redis.constants.js';
 
 @Injectable()
 export class RedisService {
@@ -95,11 +96,12 @@ export class RedisService {
    * Decrementa um contador e retorna o novo valor.
    * Usado para controlar ingressos disponíveis por lote.
    */
-  async decrementAvailable(key: string, by = 1): Promise<number> {
+  // Sem async: os métodos apenas delegam a Promise do ioredis — await seria redundante
+  decrementAvailable(key: string, by = 1): Promise<number> {
     return this.redis.decrby(key, by);
   }
 
-  async incrementAvailable(key: string, by = 1): Promise<number> {
+  incrementAvailable(key: string, by = 1): Promise<number> {
     return this.redis.incrby(key, by);
   }
 }

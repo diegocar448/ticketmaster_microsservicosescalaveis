@@ -221,7 +221,9 @@ services:
       POSTGRES_PASSWORD: showpass_dev_secret
       POSTGRES_DB: showpass
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # postgres:18+ exige mount em /var/lib/postgresql (não /data)
+      # permite pg_upgrade --link entre major versions sem cruzar mount boundaries
+      - postgres_data:/var/lib/postgresql
       # Script de init: cria databases separados por serviço
       - ./infra/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
@@ -551,6 +553,8 @@ CMD ["node", "dist/main.js"]
 
 ## Passo 1.10 — `.env.example` (por serviço)
 
+Cada serviço tem um `.env.example` com os nomes e valores padrão de desenvolvimento. O arquivo `.env` (com valores reais) não é versionado — está no `.gitignore`.
+
 ```bash
 # apps/event-service/.env.example
 # Copie para .env e preencha os valores
@@ -576,6 +580,27 @@ OTEL_SERVICE_NAME=event-service
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
+### Criar os `.env` de todos os serviços
+
+O `docker-compose.yml` usa `env_file` para cada serviço — se o arquivo não existir, o `docker compose up` falha com `env file not found`. **Antes de rodar qualquer comando docker compose**, crie os arquivos para todos os serviços:
+
+```bash
+# A partir da raiz do monorepo — copia todos os .env.example para .env
+for svc in api-gateway auth-service event-service booking-service \
+            payment-service search-service worker-service web; do
+  if [ ! -f "apps/$svc/.env" ]; then
+    cp "apps/$svc/.env.example" "apps/$svc/.env"
+    echo "✓ apps/$svc/.env criado"
+  else
+    echo "  apps/$svc/.env já existe, mantido"
+  fi
+done
+```
+
+Neste ponto os arquivos têm os valores padrão do `.env.example`. O campo `JWT_PUBLIC_KEY` ainda é um placeholder — ele será preenchido no **Capítulo 4** após gerar o par RSA.
+
+> **Por que não há um `.env` pronto no repo?** Porque `.env` contém segredos (chaves RSA, API keys, senhas de banco). Versionar segredos é a vulnerabilidade OWASP A02 (Cryptographic Failures). O `.env.example` documenta o contrato de configuração sem expor valores reais.
+
 ---
 
 ## Passo 1.11 — `Makefile`
@@ -583,12 +608,54 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```makefile
 # Makefile — comandos do dia a dia
 
-.PHONY: dev build test lint infra-up infra-down db-migrate db-seed clean
+.PHONY: setup dev dev-services dev-stop dev-status dev-logs \
+        build test lint infra-up infra-down \
+        db-migrate db-seed gen-keys clean
+
+# ─── Setup inicial (rodar uma vez após clonar o repo) ────────────────────────
+# Cria os .env de todos os serviços a partir dos .env.example
+# As chaves RSA são preenchidas no Cap 04 (make gen-keys)
+setup:
+	@for svc in api-gateway auth-service event-service booking-service \
+	             payment-service search-service worker-service web; do \
+	  if [ ! -f "apps/$$svc/.env" ]; then \
+	    cp "apps/$$svc/.env.example" "apps/$$svc/.env"; \
+	    echo "✓ apps/$$svc/.env criado"; \
+	  else \
+	    echo "  apps/$$svc/.env já existe"; \
+	  fi; \
+	done
+
+# Gera par RSA 4096-bit e distribui as chaves para todos os .env
+# Requer: openssl + python3 instalados
+# O script Python garante que as chaves ficam em formato single-line com \n literal
+# (dotenv interpreta \n como newline — multiline real não funciona em .env)
+gen-keys:
+	@echo "🔑 Gerando par de chaves RSA 4096-bit para o auth-service..."
+	@openssl genrsa -out /tmp/showpass_private.pem 4096 2>/dev/null
+	@openssl rsa -in /tmp/showpass_private.pem -pubout -out /tmp/showpass_public.pem 2>/dev/null
+	@python3 scripts/gen-keys.py
+	@rm -f /tmp/showpass_private.pem /tmp/showpass_public.pem
+	@echo "✅ Chaves RSA geradas e distribuídas para todos os serviços"
 
 # ─── Desenvolvimento ──────────────────────────────────────────────────────────
-dev:
-	docker compose up api-gateway event-service booking-service \
-	  payment-service search-service worker-service web -d
+
+# Inicia os serviços NestJS implementados no capítulo atual em background (hot reload)
+# Os serviços rodam diretamente com Node.js — sem container (mais rápido para iterar)
+dev-services:
+	@bash scripts/dev.sh start
+
+dev-stop:
+	@bash scripts/dev.sh stop
+
+dev-status:
+	@bash scripts/dev.sh status
+
+dev-logs:
+	@bash scripts/dev.sh logs
+
+# Sobe infra + todos os serviços via Turborepo (modo watch — sem background)
+dev: infra-up
 	pnpm run dev
 
 # Somente infraestrutura (postgres, redis, kafka, elasticsearch)
@@ -608,11 +675,11 @@ db-migrate:
 	pnpm --filter @showpass/auth-service    run db:migrate
 
 db-seed:
-	pnpm --filter @showpass/event-service run db:seed
+	pnpm --filter @showpass/auth-service  run db:seed   # planos SaaS (free/pro/enterprise)
+	pnpm --filter @showpass/event-service run db:seed   # categorias de eventos e planos
 
 db-studio:
-	@echo "Abrindo Prisma Studio para qual serviço? (event|booking|payment|auth)"
-	@read service; pnpm --filter @showpass/$$service-service run db:studio
+	pnpm --filter @showpass/$(SERVICE) run db:studio
 
 # ─── Qualidade ────────────────────────────────────────────────────────────────
 lint:
@@ -638,7 +705,93 @@ clean:
 
 ---
 
-## Passo 1.12 — Estrutura de um App NestJS (padrão do monorepo)
+## Passo 1.12 — Arquivos de configuração do workspace
+
+### `.npmrc` — hoisting de pacotes Prisma
+
+```ini
+# .npmrc (raiz do monorepo)
+#
+# Prisma gera código em node_modules/.prisma/<service> e acessa
+# @prisma/client-runtime-utils via CJS require(). Com o isolamento
+# padrão do pnpm, esse require() falha porque o pacote está no
+# virtual store mas não no node_modules raiz.
+#
+# public-hoist-pattern eleva os pacotes @prisma/* para o node_modules
+# raiz — resolve o erro "Cannot find module '@prisma/client-runtime-utils'"
+public-hoist-pattern[]=@prisma/*
+```
+
+### `.swcrc` — compilador SWC para NestJS
+
+```json
+{
+  "jsc": {
+    "target": "es2022",
+    "parser": {
+      "syntax": "typescript",
+      "decorators": true,
+      "dynamicImport": true
+    },
+    "transform": {
+      "legacyDecorator": true,
+      "decoratorMetadata": true
+    },
+    "keepClassNames": true
+  },
+  "sourceMaps": "inline"
+}
+```
+
+> **Por que SWC e não tsx/esbuild?**  
+> NestJS usa `emitDecoratorMetadata` para injeção de dependências (DI). O `tsx` (baseado em esbuild) **não suporta** essa flag — os decorators são removidos em tempo de compilação e o NestJS cria instâncias com parâmetros `undefined`. O SWC suporta `decoratorMetadata: true` nativamente.  
+> O loader `@swc-node/register/esm` é usado no script `dev`: `node --watch --loader @swc-node/register/esm src/main.ts`.
+
+### `"type": "module"` em todos os `package.json` dos serviços
+
+Cada `apps/<service>/package.json` e `packages/<lib>/package.json` precisa de:
+
+```json
+{
+  "type": "module"
+}
+```
+
+Sem isso, o `@swc-node/register/esm` resolve arquivos `.ts` como `commonjs` (não como ESM), e o Node.js lança `SyntaxError: does not provide an export named 'AppModule'`.
+
+### `scripts/gen-keys.py` — geração de chaves RSA
+
+O script Python gera o par de chaves RSA 4096-bit e as salva nos `.env` no formato correto para o dotenv:
+
+- As chaves PEM têm quebras de linha reais — dotenv lê apenas a primeira linha de valores sem aspas
+- O script usa `"\\n".join(...)` para colapsar em uma linha com `\n` literais
+- O dotenv converte `\n` literal → newline real quando carrega a variável
+- As entradas são escritas entre aspas duplas: `JWT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n..."`
+
+### `scripts/dev.sh` — inicialização dos serviços em background
+
+```bash
+# Inicia auth-service (3006), event-service (3003) e api-gateway (3000) em background
+./scripts/dev.sh start
+
+# Parar todos
+./scripts/dev.sh stop
+
+# Ver status (PID + porta de cada serviço)
+./scripts/dev.sh status
+
+# Logs de todos os serviços
+./scripts/dev.sh logs
+
+# Logs de um serviço específico (tail -f)
+./scripts/dev.sh logs auth-service
+```
+
+Os logs ficam em `/tmp/showpass-logs/`. Equivalentes via Makefile: `make dev-services`, `make dev-stop`, `make dev-status`.
+
+---
+
+## Passo 1.14 — Estrutura de um App NestJS (padrão do monorepo)
 
 Cada serviço em `apps/` segue a mesma estrutura:
 
@@ -676,7 +829,7 @@ apps/event-service/
 
 ---
 
-## Passo 1.13 — CI/CD desde o Dia 1
+## Passo 1.15 — CI/CD desde o Dia 1
 
 > **Por que desde o início?**  
 > Configurar o CI no dia 1 garante que todo código que entra no repositório já passa por lint, type-check e testes. Não existe "vou adicionar CI depois" — esse atalho cria dívida técnica imediata.
@@ -811,7 +964,7 @@ jobs:
 
 ---
 
-## Passo 1.14 — Proteger a branch main no GitHub
+## Passo 1.16 — Proteger a branch main no GitHub
 
 > **Por que é obrigatório?**
 > Sem proteção, qualquer membro do time (ou você mesmo num momento de descuido) pode fazer `git push origin main` direto — pulando CI, code review e testes. Isso é o tipo de acidente que derruba produção às 23h de sexta-feira.
@@ -853,7 +1006,7 @@ error: failed to push some refs to 'github.com:seu-usuario/showpass'
 
 ---
 
-## Passo 1.15 — Fluxo de trabalho com branches
+## Passo 1.17 — Fluxo de trabalho com branches
 
 A partir de agora, **todo trabalho é feito em branches**. Nenhum commit vai direto na main.
 
@@ -979,6 +1132,15 @@ Apenas o Docker Compose.
 
 ### Passo a passo
 
+**0. Setup inicial (uma vez após clonar o repo)**
+
+```bash
+pnpm install
+make setup      # cria os .env de todos os serviços a partir dos .env.example
+```
+
+Os `.env` criados têm valores de desenvolvimento funcional — exceto `JWT_PUBLIC_KEY` e `JWT_PRIVATE_KEY`, que são placeholders até o Cap 04 (`make gen-keys`).
+
 **1. Subir os containers de infraestrutura**
 
 ```bash
@@ -1054,9 +1216,13 @@ Neste capítulo você configurou:
 4. **ESLint + eslint-plugin-security** — detecta padrões de injection em tempo de lint
 5. **PostgreSQL** com databases separados por serviço — bounded context no nível de dados
 6. **Kafka KRaft** — sem ZooKeeper, setup mais simples e moderno
-7. **GitHub Actions CI** — lint, type-check e testes rodam em todo PR
-8. **Branch Protection via Rulesets** — push direto na main bloqueado, PRs obrigatórios
-9. **Fluxo de branches por capítulo** — convenção de nomes e Conventional Commits
+7. **`.npmrc`** com `public-hoist-pattern[]=@prisma/*` — resolve hoisting do Prisma no pnpm
+8. **`.swcrc`** com `decoratorMetadata: true` — NestJS DI funciona corretamente (tsx/esbuild não suporta)
+9. **`scripts/gen-keys.py`** — geração de chaves RSA 4096-bit no formato correto para dotenv
+10. **`scripts/dev.sh`** — inicia/para serviços NestJS em background com hot reload
+11. **GitHub Actions CI** — lint, type-check e testes rodam em todo PR
+12. **Branch Protection via Rulesets** — push direto na main bloqueado, PRs obrigatórios
+13. **Fluxo de branches por capítulo** — convenção de nomes e Conventional Commits
 10. **Padrão de diretórios** para serviços NestJS — replicado em todos os `apps/`
 
 ---

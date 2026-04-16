@@ -91,7 +91,7 @@ export class VerifyStripeWebhookMiddleware implements NestMiddleware {
 // apps/payment-service/src/modules/orders/orders.service.ts
 
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service.js';
 import { KafkaProducerService } from '@showpass/kafka';
 import { KAFKA_TOPICS } from '@showpass/types';
 import Stripe from 'stripe';
@@ -334,7 +334,7 @@ import { Controller, Post, Req, Res, HttpCode } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { Logger } from '@nestjs/common';
 import Stripe from 'stripe';
-import { PrismaService } from '../../prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service.js';
 import { KafkaProducerService } from '@showpass/kafka';
 import { KAFKA_TOPICS } from '@showpass/types';
 
@@ -525,7 +525,7 @@ export class WebhookController {
 // Configurar express para preservar o raw body apenas na rota do webhook.
 
 import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
+import { AppModule } from './app.module.js';
 import express from 'express';
 
 async function bootstrap(): Promise<void> {
@@ -563,18 +563,18 @@ O pagamento usa o Stripe em modo teste. Você precisa da [Stripe CLI](https://st
 docker compose up -d
 
 # Terminal 2 — auth-service
-pnpm --filter auth-service run dev          # porta 3006
+pnpm --filter @showpass/auth-service run dev          # porta 3006
 
 # Terminal 3 — event-service
-pnpm --filter event-service run dev         # porta 3003
+pnpm --filter @showpass/event-service run dev         # porta 3003
 
 # Terminal 4 — booking-service
-pnpm --filter booking-service run dev       # porta 3004
+pnpm --filter @showpass/booking-service run dev       # porta 3004
 
 # Terminal 5 — payment-service
-pnpm --filter payment-service run db:generate
-pnpm --filter payment-service run db:migrate
-pnpm --filter payment-service run dev       # porta 3002
+pnpm --filter @showpass/payment-service run db:generate
+pnpm --filter @showpass/payment-service run db:migrate
+pnpm --filter @showpass/payment-service run dev       # porta 3002
 
 # Terminal 6 — Stripe CLI (reencaminha webhooks para o serviço local)
 stripe listen --forward-to http://localhost:3002/webhooks/stripe

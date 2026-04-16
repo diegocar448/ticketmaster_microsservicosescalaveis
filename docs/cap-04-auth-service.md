@@ -32,20 +32,43 @@ RS256 (assimétrico):
 ## Passo 4.1 — Gerar par de chaves RSA
 
 ```bash
-# Criar diretório de chaves
-mkdir -p apps/auth-service/keys packages/types/keys
+# Gerar chave privada RSA 4096-bit
+openssl genrsa -out /tmp/showpass_private.pem 4096
 
-# Gerar chave privada RSA 4096-bit (auth-service guarda)
-openssl genrsa -out apps/auth-service/keys/private.pem 4096
-
-# Extrair chave pública (distribuída para todos os serviços)
-openssl rsa -in apps/auth-service/keys/private.pem \
-            -pubout \
-            -out packages/types/keys/public.pem
+# Extrair chave pública
+openssl rsa -in /tmp/showpass_private.pem -pubout -out /tmp/showpass_public.pem
 ```
 
-> O `.gitignore` já contém `**/*.pem` que ignora ambas as chaves automaticamente.
-> Nunca commitar chaves RSA — em produção, injetar via secrets do K8s.
+> O `.gitignore` já contém `**/*.pem`. Nunca commitar chaves RSA — em produção, injetar via secrets do K8s.
+
+### Passo 4.1b — Colocar as chaves nos `.env`
+
+O dotenv interpreta `\n` (literal) dentro de aspas duplas como newline real. O script `scripts/gen-keys.py` faz isso automaticamente — ele gera as chaves, formata em single-line e distribui para todos os `.env`:
+
+```bash
+# Gera par de chaves RSA 4096-bit e distribui para todos os serviços
+make gen-keys
+```
+
+> **Por que um script Python e não shell/awk?**
+> O comando `awk 'NF{printf "%s\\n", $0}'` parece correto mas produz newlines reais no shell — não o literal `\n`. O resultado é um `.env` com valor multiline que o dotenv lê como linha incompleta, deixando `JWT_PRIVATE_KEY` com apenas `"-----BEGIN PRIVATE KEY-----"`. O Python escreve o formato correto de forma portável.
+
+O formato gravado no `.env` é:
+```
+JWT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIJQg...\n-----END PRIVATE KEY-----\n"
+```
+
+> **Por que todos os serviços precisam da chave pública?**
+> Com JWT RS256, o auth-service **assina** o token com a chave privada e qualquer serviço pode **verificar** com a chave pública — sem precisar chamar o auth-service em cada request. Se a chave pública estiver errada em um serviço, ele rejeita todos os tokens com `401 Unauthorized`.
+
+**Verificar que funcionou:**
+
+```bash
+# A chave no .env deve ser single-line com \n literal
+grep "JWT_PUBLIC_KEY" apps/event-service/.env | head -c 80
+```
+
+Saída esperada: `JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nMIIBIjAN...`
 
 ---
 
@@ -169,14 +192,22 @@ model EmailVerification {
 
 ```typescript
 // apps/auth-service/prisma.config.ts
-// Prisma 7 separou a URL do schema para suportar múltiplos adapters.
+//
+// Prisma 7: a URL do banco vem de prisma.config.ts, não do schema.prisma.
+//
+// ATENÇÃO — dois gotchas:
+// 1. O campo correto é `datasource.url` (NÃO `datasourceUrl` — não existe em Prisma 7)
+// 2. O Prisma CLI não carrega .env automaticamente: o import abaixo é obrigatório
 
+import 'dotenv/config';
 import { defineConfig } from 'prisma/config';
 
 export default defineConfig({
-  datasourceUrl: process.env['DATABASE_URL'],
   earlyAccess: true,
   schema: 'prisma/schema.prisma',
+  datasource: {
+    url: process.env['DATABASE_URL'],
+  },
 });
 ```
 
@@ -195,12 +226,26 @@ npx prisma generate
 
 ```typescript
 // apps/auth-service/src/prisma/prisma.service.ts
+//
+// Prisma 7 "client" engine exige driver adapter — não aceita conexão direta
+// sem adapter (breaking change do Prisma 7).
+// @prisma/adapter-pg usa pg.Pool internamente (pool de conexões nativo Node.js).
+// Instalar antes: pnpm add @prisma/adapter-pg pg && pnpm add -D @types/pg
 
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Pool } from 'pg';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from './generated/index.js';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+  constructor() {
+    // DATABASE_URL já foi carregado pelo dotenv no main.ts
+    const pool = new Pool({ connectionString: process.env['DATABASE_URL'] });
+    const adapter = new PrismaPg(pool);
+    super({ adapter });
+  }
+
   async onModuleInit(): Promise<void> {
     await this.$connect();
   }
@@ -225,8 +270,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 
 export interface JwtPayload {
   sub: string;           // user ID
@@ -240,8 +283,12 @@ export interface JwtPayload {
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor() {
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- caminho fixo, não vem de input do usuário
-    const publicKey = readFileSync(join(__dirname, '../../../../keys/public.pem'));
+    // Fail fast: se JWT_PUBLIC_KEY não estiver definida, o serviço não sobe.
+    // dotenv carregado em main.ts garante que process.env já tem o valor aqui.
+    const publicKey = process.env['JWT_PUBLIC_KEY'];
+    if (!publicKey) {
+      throw new Error('JWT_PUBLIC_KEY não definida — rode make gen-keys e verifique o .env');
+    }
 
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -258,8 +305,6 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   }
 }
 ```
-
-> **Nota:** Com `module: "NodeNext"` e `package.json` sem `"type": "module"`, os arquivos `.ts` compilam para CommonJS. O `__dirname` está disponível como global — não usar `import.meta.url`.
 
 ---
 
@@ -885,8 +930,6 @@ export class ZodValidationPipe<T> implements PipeTransform {
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { AuthController } from './auth.controller.js';
 import { OrganizerAuthService } from './organizer-auth.service.js';
 import { BuyerAuthService } from './buyer-auth.service.js';
@@ -894,8 +937,12 @@ import { TokenService } from './token.service.js';
 import { JwtStrategy } from './strategies/jwt.strategy.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 
-// eslint-disable-next-line security/detect-non-literal-fs-filename
-const privateKey = readFileSync(join(__dirname, '../../../keys/private.pem'));
+// Fail fast: se JWT_PRIVATE_KEY não estiver definida, o serviço não sobe.
+// dotenv carregado em main.ts garante que process.env já tem o valor aqui.
+const privateKey = process.env['JWT_PRIVATE_KEY'];
+if (!privateKey) {
+  throw new Error('JWT_PRIVATE_KEY não definida — rode make gen-keys e verifique o .env');
+}
 
 @Module({
   imports: [
@@ -936,6 +983,7 @@ export class AppModule {}
 ```typescript
 // apps/auth-service/src/main.ts
 
+import 'dotenv/config';   // deve ser o PRIMEIRO import — carrega .env antes de qualquer módulo
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
@@ -974,7 +1022,7 @@ Adicionar ao `apps/auth-service/package.json`:
 ## Fluxo de autenticação completo
 
 ```
-1. Login (POST /auth/login)
+1. Login (POST /auth/organizers/login)
    ├── Validar email/password com Zod
    ├── Bcrypt.compare (timing constante — OWASP A07)
    ├── Emitir Access Token (JWT RS256, 15min)
@@ -1015,16 +1063,32 @@ Adicionar ao `apps/auth-service/package.json`:
 
 A partir deste capítulo você tem um serviço HTTP real para testar. Salve o token retornado — ele será necessário em todos os próximos capítulos.
 
+### Pré-requisito: gerar e distribuir as chaves RSA
+
+Se ainda não fez o Passo 4.1b, rode agora:
+
+```bash
+make gen-keys
+```
+
+Sem esse passo, o auth-service não sobe — ele valida que `JWT_PRIVATE_KEY` está presente ao inicializar o módulo.
+
 ### O que precisa estar rodando
 
 ```bash
-# Terminal 1 — infraestrutura
-docker compose up -d
+# 1. Infraestrutura Docker
+make infra-up
 
-# Terminal 2 — auth-service
-pnpm --filter auth-service run db:generate
-pnpm --filter auth-service run db:migrate   # cria as tabelas
-pnpm --filter auth-service run dev          # porta 3006
+# 2. Migrations e seed (primeira vez)
+pnpm --filter @showpass/auth-service run db:generate
+pnpm --filter @showpass/auth-service run db:migrate
+pnpm --filter @showpass/auth-service run db:seed   # popula plans (free/pro/enterprise)
+
+# 3. Subir o serviço
+pnpm --filter @showpass/auth-service run dev        # porta 3006
+
+# Ou usar o script que inicia auth + event + gateway de uma vez:
+./scripts/dev.sh
 ```
 
 Opcionalmente, suba o gateway para testar o fluxo completo via proxy:
@@ -1165,7 +1229,10 @@ O campo `organizerId` é o que o event-service usa para isolamento de dados por 
 
 | Biblioteca | Mudança |
 |---|---|
-| **Prisma 7** | `url` removido do `datasource` → usar `prisma.config.ts` com `defineConfig` |
+| **Prisma 7** | `url` removido do `datasource` → usar `prisma.config.ts` com `defineConfig({ datasource: { url: process.env['DATABASE_URL'] } })` |
+| **Prisma 7** | `new PrismaClient()` falha com "requires adapter or accelerateUrl" → instalar `@prisma/adapter-pg` + `pg` e passar no construtor |
+| **NestJS + dotenv** | `auth.module.ts` avalia `process.env['JWT_PRIVATE_KEY']` antes do bootstrap → `import 'dotenv/config'` deve ser o **primeiro** import de `main.ts` |
+| **auth.module.ts** | `readFileSync('.../keys/private.pem')` falha se o arquivo não existir → usar `process.env['JWT_PRIVATE_KEY']` (set pelo `make gen-keys`) |
 | **Prisma 7** | Campos opcionais retornam `string \| null` (não `undefined`) → usar `?? null` ao criar |
 | **Zod 4** | `z.string().email()` deprecated → `z.email()` |
 | **Zod 4** | `ZodSchema` deprecated → `ZodType` |

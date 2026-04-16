@@ -13,14 +13,17 @@ services:
   # ─────────────────────────────────────────────
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: showpass
       POSTGRES_PASSWORD: showpass_dev_secret
       POSTGRES_DB: showpass
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # postgres:18 exige mount em /var/lib/postgresql (não /data)
+      # Isso permite usar pg_upgrade --link entre major versions sem cruzar boundaries de mount
+      # Ver: https://github.com/docker-library/postgres/pull/1259
+      - postgres_data:/var/lib/postgresql
       # Script de init: cria databases separados por serviço
       - ./infra/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
@@ -38,7 +41,7 @@ services:
   # Sentinel detecta falha do primary e promove uma replica automaticamente (failover < 30s)
   # Ver: infra/terraform/main.tf → aws_elasticache_replication_group (num_cache_clusters: 3)
   redis:
-    image: redis:7-alpine
+    image: redis:8.6-alpine
     restart: unless-stopped
     command: >
       redis-server
@@ -57,7 +60,7 @@ services:
       retries: 5
 
   kafka:
-    image: apache/kafka:3.7.0
+    image: apache/kafka:4.2.0
     restart: unless-stopped
     environment:
       # KRaft mode — sem ZooKeeper
@@ -102,7 +105,7 @@ services:
         condition: service_healthy
 
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.3.3
     restart: unless-stopped
     environment:
       discovery.type: single-node

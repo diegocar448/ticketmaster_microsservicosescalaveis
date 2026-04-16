@@ -131,10 +131,10 @@ export class CreateReservationCommand implements ICommand {
 // apps/booking-service/src/modules/reservations/handlers/create-reservation.handler.ts
 
 import { CommandHandler, ICommandHandler, EventBus } from '@nestjs/cqrs';
-import { CreateReservationCommand } from '../commands/create-reservation.command';
-import { ReservationCreatedEvent } from '../events/reservation-created.event';
-import { SeatLockService } from '../../locks/seat-lock.service';
-import { PrismaService } from '../../../prisma/prisma.service';
+import { CreateReservationCommand } from '../commands/create-reservation.command.js';
+import { ReservationCreatedEvent } from '../events/reservation-created.event.js';
+import { SeatLockService } from '../../locks/seat-lock.service.js';
+import { PrismaService } from '../../../prisma/prisma.service.js';
 
 @CommandHandler(CreateReservationCommand)
 export class CreateReservationHandler
@@ -186,7 +186,7 @@ export class CreateReservationHandler
 // apps/booking-service/src/modules/reservations/queries/get-buyer-reservations.query.ts
 
 import { IQueryHandler, QueryHandler } from '@nestjs/cqrs';
-import { PrismaService } from '../../../prisma/prisma.service';
+import { PrismaService } from '../../../prisma/prisma.service.js';
 
 export class GetBuyerReservationsQuery {
   constructor(
@@ -310,8 +310,8 @@ export class SeatLockService {
 import { Injectable } from '@nestjs/common';
 import { EventPattern, Payload } from '@nestjs/microservices';
 import { KAFKA_TOPICS } from '@showpass/types';
-import { PrismaService } from '../../prisma/prisma.service';
-import { SeatLockService } from '../locks/seat-lock.service';
+import { PrismaService } from '../../prisma/prisma.service.js';
+import { SeatLockService } from '../locks/seat-lock.service.js';
 
 @Injectable()
 export class BookingSaga {
@@ -390,8 +390,8 @@ sudo mv grpcurl /usr/local/bin/
 **2. Subir os serviços com gRPC habilitado**
 
 ```bash
-pnpm --filter event-service run dev    # porta gRPC: 50051
-pnpm --filter booking-service run dev  # chama event-service via gRPC
+pnpm --filter @showpass/event-service run dev    # porta gRPC: 50051
+pnpm --filter @showpass/booking-service run dev  # chama event-service via gRPC
 ```
 
 **3. Listar serviços disponíveis via gRPC reflection**
@@ -459,7 +459,7 @@ As primeiras retornam `503 Service Unavailable`. Após 5 falhas, o circuit break
 **2. Restaurar o event-service e ver o circuit fechar**
 
 ```bash
-pnpm --filter event-service run dev
+pnpm --filter @showpass/event-service run dev
 ```
 
 Após ~30 segundos (janela de half-open), o circuit breaker testa uma request. Se bem-sucedida, fecha o circuito e o sistema volta ao normal.

@@ -233,12 +233,12 @@ Todos os serviços dos caps anteriores **mais** o payment-service e a Stripe CLI
 ```bash
 # Infraestrutura + todos os serviços
 docker compose up -d
-pnpm --filter auth-service run dev
-pnpm --filter event-service run dev
-pnpm --filter booking-service run dev
-pnpm --filter payment-service run dev
-pnpm --filter api-gateway run dev
-pnpm --filter web run dev
+pnpm --filter @showpass/auth-service run dev
+pnpm --filter @showpass/event-service run dev
+pnpm --filter @showpass/booking-service run dev
+pnpm --filter @showpass/payment-service run dev
+pnpm --filter @showpass/api-gateway run dev
+pnpm --filter @showpass/web run dev
 
 # Stripe CLI (em outro terminal)
 stripe listen --forward-to http://localhost:3002/webhooks/stripe

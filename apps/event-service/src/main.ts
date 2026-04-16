@@ -2,6 +2,7 @@
 // Ponto de entrada do Event Service.
 // Responsável por gerenciamento de eventos, venues e publicação via Kafka.
 
+import 'dotenv/config';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';

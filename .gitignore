@@ -32,6 +32,7 @@ apps/auth-service/src/keys/private.key
 # Logs
 *.log
 logs/
+pnpm-debug.log*
 
 # OS
 .DS_Store
