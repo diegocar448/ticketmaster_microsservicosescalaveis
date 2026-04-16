@@ -275,8 +275,8 @@ import {
   ConflictException,
   Logger,
 } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
-import { SeatLockService } from '../locks/seat-lock.service';
+import { PrismaService } from '../../prisma/prisma.service.js';
+import { SeatLockService } from '../locks/seat-lock.service.js';
 import { KafkaProducerService } from '@showpass/kafka';
 import { KAFKA_TOPICS } from '@showpass/types';
 import type { CreateReservationDto } from '@showpass/types';
@@ -525,7 +525,7 @@ export class ReservationsService {
 
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { PrismaService } from '../../prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service.js';
 import { KafkaProducerService } from '@showpass/kafka';
 import { KAFKA_TOPICS } from '@showpass/types';
 
@@ -634,11 +634,11 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { ReservationsService } from './reservations.service';
-import { SeatLockService } from '../locks/seat-lock.service';
-import { BuyerGuard } from '../../common/guards/buyer.guard';
+import { ReservationsService } from './reservations.service.js';
+import { SeatLockService } from '../locks/seat-lock.service.js';
+import { BuyerGuard } from '../../common/guards/buyer.guard.js';
 import { CurrentUser, type AuthenticatedUser } from '@showpass/types';
-import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { CreateReservationSchema, type CreateReservationDto } from '@showpass/types';
 
 @Controller('bookings/reservations')

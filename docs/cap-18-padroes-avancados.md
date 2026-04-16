@@ -131,10 +131,10 @@ export class CreateReservationCommand implements ICommand {
 // apps/booking-service/src/modules/reservations/handlers/create-reservation.handler.ts
 
 import { CommandHandler, ICommandHandler, EventBus } from '@nestjs/cqrs';
-import { CreateReservationCommand } from '../commands/create-reservation.command';
-import { ReservationCreatedEvent } from '../events/reservation-created.event';
-import { SeatLockService } from '../../locks/seat-lock.service';
-import { PrismaService } from '../../../prisma/prisma.service';
+import { CreateReservationCommand } from '../commands/create-reservation.command.js';
+import { ReservationCreatedEvent } from '../events/reservation-created.event.js';
+import { SeatLockService } from '../../locks/seat-lock.service.js';
+import { PrismaService } from '../../../prisma/prisma.service.js';
 
 @CommandHandler(CreateReservationCommand)
 export class CreateReservationHandler
@@ -186,7 +186,7 @@ export class CreateReservationHandler
 // apps/booking-service/src/modules/reservations/queries/get-buyer-reservations.query.ts
 
 import { IQueryHandler, QueryHandler } from '@nestjs/cqrs';
-import { PrismaService } from '../../../prisma/prisma.service';
+import { PrismaService } from '../../../prisma/prisma.service.js';
 
 export class GetBuyerReservationsQuery {
   constructor(
@@ -310,8 +310,8 @@ export class SeatLockService {
 import { Injectable } from '@nestjs/common';
 import { EventPattern, Payload } from '@nestjs/microservices';
 import { KAFKA_TOPICS } from '@showpass/types';
-import { PrismaService } from '../../prisma/prisma.service';
-import { SeatLockService } from '../locks/seat-lock.service';
+import { PrismaService } from '../../prisma/prisma.service.js';
+import { SeatLockService } from '../locks/seat-lock.service.js';
 
 @Injectable()
 export class BookingSaga {

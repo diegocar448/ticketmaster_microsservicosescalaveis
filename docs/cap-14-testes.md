@@ -8,7 +8,7 @@
 // apps/booking-service/src/modules/locks/seat-lock.service.spec.ts
 
 import { Test } from '@nestjs/testing';
-import { SeatLockService } from './seat-lock.service';
+import { SeatLockService } from './seat-lock.service.js';
 import { RedisService } from '@showpass/redis';
 
 // Mock do RedisService — testes unitários não devem tocar infraestrutura
@@ -102,8 +102,8 @@ describe('SeatLockService', () => {
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import * as request from 'supertest';
-import { AppModule } from '../../src/app.module';
-import { PrismaService } from '../../src/prisma/prisma.service';
+import { AppModule } from '../../src/app.module.js';
+import { PrismaService } from '../../src/prisma/prisma.service.js';
 
 describe('Reservations E2E', () => {
   let app: INestApplication;

@@ -1022,7 +1022,7 @@ Adicionar ao `apps/auth-service/package.json`:
 ## Fluxo de autenticação completo
 
 ```
-1. Login (POST /auth/login)
+1. Login (POST /auth/organizers/login)
    ├── Validar email/password com Zod
    ├── Bcrypt.compare (timing constante — OWASP A07)
    ├── Emitir Access Token (JWT RS256, 15min)

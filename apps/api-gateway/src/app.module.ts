@@ -39,20 +39,23 @@ export class AppModule implements NestModule {
       // Auth em todas as rotas exceto as públicas
       .apply(JwtAuthMiddleware)
       .exclude(
+        // NestJS 11 + path-to-regexp v8: wildcard deve ser nomeado (*path, não (.*))
         'health',
-        'health/(.*)',
+        'health/*path',
         'docs',
-        'docs/(.*)',
+        'docs/*path',
         // Rotas de auth emitem o token — não precisam dele para entrar
-        { path: 'auth/login', method: RequestMethod.POST },
-        { path: 'auth/register', method: RequestMethod.POST },
-        { path: 'auth/refresh', method: RequestMethod.POST },
-        { path: 'auth/buyer/login', method: RequestMethod.POST },
-        { path: 'auth/buyer/register', method: RequestMethod.POST },
+        { path: 'auth/organizers/register', method: RequestMethod.POST },
+        { path: 'auth/organizers/login',    method: RequestMethod.POST },
+        { path: 'auth/organizers/refresh',  method: RequestMethod.POST },
+        { path: 'auth/buyers/register',     method: RequestMethod.POST },
+        { path: 'auth/buyers/login',        method: RequestMethod.POST },
+        { path: 'auth/buyer/login',         method: RequestMethod.POST },  // rota legada
+        { path: 'auth/refresh',             method: RequestMethod.POST },  // rota genérica
         // Busca de eventos é pública
-        { path: 'events', method: RequestMethod.GET },
-        { path: 'events/(.*)', method: RequestMethod.GET },
-        { path: 'search/(.*)', method: RequestMethod.GET },
+        { path: 'events',      method: RequestMethod.GET },
+        { path: 'events/*path', method: RequestMethod.GET },
+        { path: 'search/*path', method: RequestMethod.GET },
         // Webhook do Stripe — autenticado via HMAC, não JWT
         { path: 'webhooks/stripe', method: RequestMethod.POST },
       )

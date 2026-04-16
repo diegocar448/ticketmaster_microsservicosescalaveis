@@ -75,6 +75,12 @@ async function bootstrap(): Promise<void> {
     logger: process.env.NODE_ENV === 'production'
       ? ['error', 'warn']
       : ['log', 'debug', 'error', 'warn'],
+
+    // CRÍTICO: desabilitar body parser do NestJS.
+    // O API Gateway apenas faz proxy — não lê o body das requests.
+    // Se o NestJS parsear o body antes, o stream chega vazio ao http-proxy-middleware
+    // e a request fica travada esperando dados que nunca chegam (timeout).
+    bodyParser: false,
   });
 
   // ─── OWASP A05: Security Headers via Helmet ─────────────────────────────────
@@ -190,19 +196,21 @@ export class AppModule implements NestModule {
       .apply(JwtAuthMiddleware)
       .exclude(
         'health',
-        'health/(.*)',
+        'health/*path',
         'docs',
-        'docs/(.*)',
+        'docs/*path',
         // Rotas de auth emitem o token — não precisam dele
-        { path: 'auth/login', method: 1 },        // POST
-        { path: 'auth/register', method: 1 },
-        { path: 'auth/refresh', method: 1 },
-        { path: 'auth/buyer/login', method: 1 },
-        { path: 'auth/buyer/register', method: 1 },
+        { path: 'auth/organizers/register', method: 1 },  // POST
+        { path: 'auth/organizers/login',    method: 1 },
+        { path: 'auth/organizers/refresh',  method: 1 },
+        { path: 'auth/buyers/register',     method: 1 },
+        { path: 'auth/buyers/login',        method: 1 },
+        { path: 'auth/buyer/login',         method: 1 },  // rota legada
+        { path: 'auth/refresh',             method: 1 },
         // Busca de eventos é pública
-        { path: 'events', method: 0 },            // GET
-        { path: 'events/(.*)', method: 0 },
-        { path: 'search/(.*)', method: 0 },
+        { path: 'events',       method: 0 },              // GET
+        { path: 'events/*path', method: 0 },
+        { path: 'search/*path', method: 0 },
         // Webhook do Stripe — autenticado via HMAC, não JWT
         { path: 'webhooks/stripe', method: 1 },
       )
@@ -445,14 +453,14 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 // Em produção, as URLs vêm de variáveis de ambiente (service discovery)
 const SERVICE_MAP: Record<string, string> = {
   '/auth':     process.env.AUTH_SERVICE_URL    ?? 'http://localhost:3006',
-  '/events':   process.env.EVENT_SERVICE_URL   ?? 'http://localhost:3002',
-  '/venues':   process.env.EVENT_SERVICE_URL   ?? 'http://localhost:3002',
-  '/organizers': process.env.EVENT_SERVICE_URL ?? 'http://localhost:3002',
-  '/bookings': process.env.BOOKING_SERVICE_URL ?? 'http://localhost:3003',
-  '/payments': process.env.PAYMENT_SERVICE_URL ?? 'http://localhost:3004',
-  '/search':   process.env.SEARCH_SERVICE_URL  ?? 'http://localhost:3005',
-  '/tickets':  process.env.WORKER_SERVICE_URL  ?? 'http://localhost:3007',
-  '/webhooks': process.env.PAYMENT_SERVICE_URL ?? 'http://localhost:3004',
+  '/events':     process.env.EVENT_SERVICE_URL   ?? 'http://localhost:3003',
+  '/venues':     process.env.EVENT_SERVICE_URL   ?? 'http://localhost:3003',
+  '/organizers': process.env.EVENT_SERVICE_URL   ?? 'http://localhost:3003',
+  '/bookings':   process.env.BOOKING_SERVICE_URL ?? 'http://localhost:3004',
+  '/payments':   process.env.PAYMENT_SERVICE_URL ?? 'http://localhost:3002',
+  '/search':     process.env.SEARCH_SERVICE_URL  ?? 'http://localhost:3005',
+  '/tickets':    process.env.WORKER_SERVICE_URL  ?? 'http://localhost:3007',
+  '/webhooks':   process.env.PAYMENT_SERVICE_URL ?? 'http://localhost:3002',
 };
 
 @Controller()
@@ -621,9 +629,9 @@ JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ...\n-
 
 # ── Serviços internos ─────────────────────────────────────────────────────────
 AUTH_SERVICE_URL=http://auth-service:3006
-EVENT_SERVICE_URL=http://event-service:3002
-BOOKING_SERVICE_URL=http://booking-service:3003
-PAYMENT_SERVICE_URL=http://payment-service:3004
+EVENT_SERVICE_URL=http://event-service:3003
+BOOKING_SERVICE_URL=http://booking-service:3004
+PAYMENT_SERVICE_URL=http://payment-service:3002
 SEARCH_SERVICE_URL=http://search-service:3005
 WORKER_SERVICE_URL=http://worker-service:3007
 

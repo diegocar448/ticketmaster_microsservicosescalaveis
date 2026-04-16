@@ -1,5 +1,7 @@
 import { DynamicModule, Module } from '@nestjs/common';
-import Redis from 'ioredis';
+// Named import: ioredis é CJS — com NodeNext + "type":"module" o default import
+// falha (TS2709 / TS2351). O named export { Redis } funciona em ambos os contextos.
+import { Redis } from 'ioredis';
 import { RedisService } from './redis.service.js';
 import { REDIS_CLIENT } from './redis.constants.js';
 
@@ -34,7 +36,7 @@ export class RedisModule {
           lazyConnect: false,
         });
 
-        client.on('error', (err) => {
+        client.on('error', (err: Error) => {
           console.error('[Redis] Erro de conexão:', err);
         });
 

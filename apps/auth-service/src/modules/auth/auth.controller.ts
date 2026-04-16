@@ -113,9 +113,10 @@ export class AuthController {
   /** Perfil do organizer autenticado */
   @Get('organizers/me')
   @UseGuards(OrganizerGuard)
-  async organizerMe(
+  // Sem async: apenas retorna o usuário injetado pelo guard — sem operação assíncrona
+  organizerMe(
     @CurrentUser() user: AuthenticatedUser,
-  ): Promise<AuthenticatedUser> {
+  ): AuthenticatedUser {
     return user;
   }
 

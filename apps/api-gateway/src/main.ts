@@ -18,6 +18,12 @@ async function bootstrap(): Promise<void> {
       process.env['NODE_ENV'] === 'production'
         ? ['error', 'warn']
         : ['log', 'debug', 'error', 'warn'],
+
+    // CRÍTICO: desabilitar body parser do NestJS.
+    // O API Gateway apenas faz proxy — não lê o body das requests.
+    // Se o NestJS parsear o body antes, o stream chega vazio ao http-proxy-middleware
+    // e a request fica travada esperando dados que nunca chegam (timeout).
+    bodyParser: false,
   });
 
   // ─── OWASP A05: Security Headers via Helmet ─────────────────────────────────

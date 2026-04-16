@@ -291,7 +291,7 @@ export const EVENT_INDEX_MAPPING = {
 import { Injectable, Logger } from '@nestjs/common';
 import { ElasticsearchService } from '@nestjs/elasticsearch';
 import type { SearchResponse } from '@elastic/elasticsearch/lib/api/types';
-import { EVENT_INDEX } from './event-index';
+import { EVENT_INDEX } from './event-index.js';
 
 export interface SearchEventsParams {
   q?: string;          // texto livre
@@ -492,7 +492,7 @@ import { Controller, Logger } from '@nestjs/common';
 import { EventPattern, Payload } from '@nestjs/microservices';
 import { ElasticsearchService } from '@nestjs/elasticsearch';
 import { KAFKA_TOPICS } from '@showpass/types';
-import { EVENT_INDEX } from '../search/event-index';
+import { EVENT_INDEX } from '../search/event-index.js';
 
 interface CdcEventPayload {
   op: 'c' | 'u' | 'd' | 'r';  // create, update, delete, read (snapshot)
@@ -628,9 +628,9 @@ export class EventIndexerService {
 // apps/search-service/src/modules/search/search.controller.ts
 
 import { Controller, Get, Query } from '@nestjs/common';
-import { SearchService } from './search.service';
+import { SearchService } from './search.service.js';
 import { z } from 'zod';
-import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 
 const SearchQuerySchema = z.object({
   q: z.string().optional(),

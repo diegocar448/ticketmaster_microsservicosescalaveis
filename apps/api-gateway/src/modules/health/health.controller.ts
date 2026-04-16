@@ -41,12 +41,12 @@ export class HealthController {
       (): Promise<HealthIndicatorResult> =>
         this.http.pingCheck(
           'event-service',
-          `${process.env['EVENT_SERVICE_URL'] ?? 'http://localhost:3002'}/health/live`,
+          `${process.env['EVENT_SERVICE_URL'] ?? 'http://localhost:3003'}/health/live`,
         ),
       (): Promise<HealthIndicatorResult> =>
         this.http.pingCheck(
           'booking-service',
-          `${process.env['BOOKING_SERVICE_URL'] ?? 'http://localhost:3003'}/health/live`,
+          `${process.env['BOOKING_SERVICE_URL'] ?? 'http://localhost:3004'}/health/live`,
         ),
     ]);
   }

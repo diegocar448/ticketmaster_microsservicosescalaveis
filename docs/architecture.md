@@ -26,12 +26,12 @@ Usuário → Cloudflare Waiting Room (lotes de 100)
 
 | Serviço | Porta | Responsabilidade |
 |---|---|---|
-| api-gateway | 3001 | JWT, rate limit, proxy, fila virtual |
-| auth-service | 3002 | Login, tokens RS256, refresh rotation |
+| api-gateway | 3000 | JWT, rate limit, proxy, fila virtual |
+| auth-service | 3006 | Login, tokens RS256, refresh rotation |
 | event-service | 3003 | Eventos, venues, planos SaaS |
 | booking-service | 3004 | Reservas, Redis locks |
-| payment-service | 3005 | Stripe, webhooks, orders |
-| search-service | 3006 | Elasticsearch, CDC consumer |
+| payment-service | 3002 | Stripe, webhooks, orders |
+| search-service | 3005 | Elasticsearch, CDC consumer |
 | worker-service | — | Kafka consumer, QR, PDF, e-mail |
 | web (Next.js) | 3000 | Frontend |
 

@@ -49,7 +49,7 @@ ASSÍNCRONO (correto):
 import { Injectable, Logger } from '@nestjs/common';
 import { createHmac, randomUUID } from 'crypto';
 import QRCode from 'qrcode';
-import { PrismaService } from '../../prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service.js';
 
 export interface TicketData {
   ticketId: string;
@@ -211,7 +211,7 @@ export class TicketGeneratorService {
 
 import { Injectable, Logger } from '@nestjs/common';
 import puppeteer from 'puppeteer';
-import type { TicketData } from './ticket-generator.service';
+import type { TicketData } from './ticket-generator.service.js';
 
 @Injectable()
 export class PdfGeneratorService {
@@ -367,10 +367,10 @@ export class PdfGeneratorService {
 import { Controller, Logger } from '@nestjs/common';
 import { EventPattern, Payload, Ctx, KafkaContext } from '@nestjs/microservices';
 import { KAFKA_TOPICS, PaymentConfirmedEventSchema, type PaymentConfirmedEvent } from '@showpass/types';
-import { TicketGeneratorService } from './ticket-generator.service';
-import { PdfGeneratorService } from './pdf-generator.service';
-import { EmailService } from '../email/email.service';
-import { PrismaService } from '../../prisma/prisma.service';
+import { TicketGeneratorService } from './ticket-generator.service.js';
+import { PdfGeneratorService } from './pdf-generator.service.js';
+import { EmailService } from '../email/email.service.js';
+import { PrismaService } from '../../prisma/prisma.service.js';
 import { randomUUID } from 'crypto';
 
 @Controller()
@@ -547,7 +547,7 @@ export class PaymentConfirmedConsumer {
 
 import { Controller, Logger } from '@nestjs/common';
 import { EventPattern, Payload } from '@nestjs/microservices';
-import { PrismaService } from '../../prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service.js';
 
 @Controller()
 export class DlqConsumer {

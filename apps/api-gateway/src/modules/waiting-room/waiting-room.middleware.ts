@@ -3,7 +3,7 @@
 
 import { Injectable, NestMiddleware } from '@nestjs/common';
 import type { Request, Response, NextFunction } from 'express';
-import { WaitingRoomService } from './waiting-room.service';
+import { WaitingRoomService } from './waiting-room.service.js';
 
 @Injectable()
 export class WaitingRoomMiddleware implements NestMiddleware {

@@ -91,7 +91,7 @@ export class VerifyStripeWebhookMiddleware implements NestMiddleware {
 // apps/payment-service/src/modules/orders/orders.service.ts
 
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service.js';
 import { KafkaProducerService } from '@showpass/kafka';
 import { KAFKA_TOPICS } from '@showpass/types';
 import Stripe from 'stripe';
@@ -334,7 +334,7 @@ import { Controller, Post, Req, Res, HttpCode } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { Logger } from '@nestjs/common';
 import Stripe from 'stripe';
-import { PrismaService } from '../../prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service.js';
 import { KafkaProducerService } from '@showpass/kafka';
 import { KAFKA_TOPICS } from '@showpass/types';
 
@@ -525,7 +525,7 @@ export class WebhookController {
 // Configurar express para preservar o raw body apenas na rota do webhook.
 
 import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
+import { AppModule } from './app.module.js';
 import express from 'express';
 
 async function bootstrap(): Promise<void> {
