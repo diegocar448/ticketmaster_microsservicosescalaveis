@@ -536,8 +536,9 @@ import { Input } from '@/components/ui/input';
 import { useAuthStore } from '@/store/auth-store';
 import { ApiError } from '@/lib/api-client';
 
+// Zod 4: z.email() top-level (z.string().email() é deprecated desde v4)
 const LoginSchema = z.object({
-  email: z.string().email('E-mail inválido'),
+  email: z.email('E-mail inválido'),
   password: z.string().min(1, 'Senha obrigatória'),
 });
 

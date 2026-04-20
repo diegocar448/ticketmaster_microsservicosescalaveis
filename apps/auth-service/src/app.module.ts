@@ -7,6 +7,7 @@
 
 import { Module } from '@nestjs/common';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { KafkaModule } from '@showpass/kafka';
 import { AuthModule } from './modules/auth/auth.module.js';
 
 @Module({
@@ -24,6 +25,17 @@ import { AuthModule } from './modules/auth/auth.module.js';
         limit: 5,      // login: máximo 5 tentativas/min
       },
     ]),
+
+    // Kafka — auth publica eventos de organizer para replicação no event-service.
+    // Só dados não-sensíveis trafegam: NUNCA passwordHash, role ou emailVerifiedAt.
+    // Ver packages/types/kafka-topics.ts (AUTH_ORGANIZER_CREATED/UPDATED) e
+    // apps/auth-service/CLAUDE.md "Responsabilidade única".
+    KafkaModule.forRoot({
+      clientId: process.env['KAFKA_CLIENT_ID'] ?? 'auth-service',
+      brokers: (process.env['KAFKA_BROKERS'] ?? 'localhost:29092').split(','),
+      groupId: process.env['KAFKA_GROUP_ID'] ?? 'auth-service-group',
+    }),
+
     AuthModule,
   ],
 })

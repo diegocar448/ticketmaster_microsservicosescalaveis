@@ -26,8 +26,12 @@ import { LoggerMiddleware } from './common/middleware/logger.middleware.js';
       },
     ]),
 
-    ProxyModule,
+    // HealthModule ANTES de ProxyModule — o ProxyController registra @All('*')
+    // que captura qualquer path, incluindo /health/*. Em Express, a PRIMEIRA
+    // rota registrada vence — então rotas específicas precisam vir antes do
+    // wildcard (OWASP A05 — liveness/readiness probes precisam responder).
     HealthModule,
+    ProxyModule,
   ],
 })
 export class AppModule implements NestModule {
@@ -52,10 +56,13 @@ export class AppModule implements NestModule {
         { path: 'auth/buyers/login',        method: RequestMethod.POST },
         { path: 'auth/buyer/login',         method: RequestMethod.POST },  // rota legada
         { path: 'auth/refresh',             method: RequestMethod.POST },  // rota genérica
-        // Busca de eventos é pública
-        { path: 'events',      method: RequestMethod.GET },
+        // Leitura pública de eventos por slug — buyers não precisam de token
+        // GET /events (lista) NÃO é excluído — exige token de organizer
         { path: 'events/*path', method: RequestMethod.GET },
         { path: 'search/*path', method: RequestMethod.GET },
+        // GET /categories é público (buyers filtram eventos por categoria)
+        // POST /categories NÃO é excluído — exige token de organizer
+        { path: 'categories', method: RequestMethod.GET },
         // Webhook do Stripe — autenticado via HMAC, não JWT
         { path: 'webhooks/stripe', method: RequestMethod.POST },
       )

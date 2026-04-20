@@ -36,49 +36,36 @@ model Plan {
   @@map("plans")
 }
 
-// ─── Organizers ───────────────────────────────────────────────────────────────
+// ─── Organizers (replicados do auth-service via Kafka) ───────────────────────
+//
+// Este serviço NÃO é a fonte da verdade sobre organizers. O auth-service é o
+// único que conhece emails, senhas e roles. Esta tabela existe apenas para:
+//   1. Servir de FK em Event.organizerId / Venue.organizerId (integridade local).
+//   2. Aplicar plan gates (maxVenues, maxActiveEvents) sem chamar o auth-service
+//      a cada request — acoplamento de rede seria pior que eventual consistency.
+//
+// Dados sensíveis (passwordHash, email, role, stripeCustomerId) NUNCA chegam
+// aqui. Ver packages/types/kafka-topics.ts:OrganizerReplicatedEventSchema e
+// apps/event-service/src/modules/organizers/organizers.consumer.ts.
 
 model Organizer {
-  id   String @id @default(uuid()) @db.Uuid
+  id   String @id @db.Uuid  // id vem do auth-service — sem @default
   name String
   slug String @unique
 
   planId String @db.Uuid
   plan   Plan   @relation(fields: [planId], references: [id])
 
-  stripeCustomerId String? @unique
+  // Timestamp da última replicação recebida. Útil para debug/observability.
+  lastSyncAt DateTime?
 
-  planExpiresAt DateTime?
-  trialEndsAt   DateTime?
-
-  venues    Venue[]
-  events    Event[]
-  users     OrganizerUser[]
+  venues Venue[]
+  events Event[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@map("organizers")
-}
-
-model OrganizerUser {
-  id           String    @id @default(uuid()) @db.Uuid
-  organizerId  String    @db.Uuid
-  organizer    Organizer @relation(fields: [organizerId], references: [id])
-
-  name         String
-  email        String    @unique
-  passwordHash String
-  role         String    @default("member")  // "owner", "admin", "member"
-
-  emailVerifiedAt DateTime?
-  lastLoginAt     DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([organizerId, role])
-  @@map("organizer_users")
 }
 
 // ─── Venues ────────────────────────────────────────────────────────────────────

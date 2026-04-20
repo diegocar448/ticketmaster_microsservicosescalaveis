@@ -22,6 +22,7 @@ mkdir -p "$LOG_DIR"
 declare -A SERVICES=(
   [auth-service]="3006"
   [event-service]="3003"
+  [booking-service]="3004"
   [api-gateway]="3000"
 )
 
@@ -95,6 +96,7 @@ cmd_start() {
     # Inicia todos os serviços na ordem correta
     start_service "auth-service"
     start_service "event-service"
+    start_service "booking-service"
     start_service "api-gateway"
   else
     for svc in "$@"; do
@@ -111,6 +113,7 @@ cmd_start() {
   echo -e "  Swagger UI:  ${CYAN}http://localhost:3000/docs${RESET}"
   echo -e "  Auth:        ${CYAN}http://localhost:3006/auth${RESET}"
   echo -e "  Events:      ${CYAN}http://localhost:3003/events${RESET}"
+  echo -e "  Bookings:    ${CYAN}http://localhost:3004/bookings/reservations${RESET}"
   echo -e "  Logs:        ${CYAN}$LOG_DIR/${RESET}"
   echo -e "\n  Para ver logs: ${YELLOW}./scripts/dev.sh logs${RESET}"
   echo -e "  Para parar:   ${YELLOW}./scripts/dev.sh stop${RESET}\n"
@@ -126,7 +129,7 @@ cmd_stop() {
 
 cmd_status() {
   echo -e "\n${BLUE}Status dos serviços:${RESET}\n"
-  for name in auth-service event-service api-gateway; do
+  for name in auth-service event-service booking-service api-gateway; do
     local port="${SERVICES[$name]}"
     local pid
     pid=$(pid_on_port "$port")
@@ -145,7 +148,7 @@ cmd_logs() {
     tail -f "$LOG_DIR/$filter.log"
   else
     # Mostra as últimas 20 linhas de cada serviço
-    for name in auth-service event-service api-gateway; do
+    for name in auth-service event-service booking-service api-gateway; do
       local log="$LOG_DIR/$name.log"
       if [ -f "$log" ]; then
         echo -e "\n${CYAN}─── $name ───${RESET}"
@@ -163,8 +166,9 @@ case "${1:-start}" in
   status)  cmd_status ;;
   logs)    shift; cmd_logs "${1:-}" ;;
   auth|auth-service)     cmd_start auth-service ;;
-  event|event-service)   cmd_start event-service ;;
-  gateway|api-gateway)   cmd_start api-gateway ;;
+  event|event-service)     cmd_start event-service ;;
+  booking|booking-service) cmd_start booking-service ;;
+  gateway|api-gateway)     cmd_start api-gateway ;;
   *)
     echo "Uso: $0 [start|stop|status|logs|auth|event|gateway]"
     exit 1

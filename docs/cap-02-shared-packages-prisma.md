@@ -256,6 +256,25 @@ export const KAFKA_TOPICS = {
   EVENT_PUBLISHED: 'events.event-published',
   EVENT_UPDATED: 'events.event-updated',
   EVENT_CANCELLED: 'events.event-cancelled',
+
+  // Ticket Batch domain — replicado para booking-service manter preço/limite locais.
+  // Por que replicar? Para não consultar event-service a cada reserva (latência + acoplamento).
+  // Trade-off aceito: eventual consistency (booking pode ver preço antigo por ~segundos).
+  TICKET_BATCH_CREATED: 'events.ticket-batch-created',
+  TICKET_BATCH_UPDATED: 'events.ticket-batch-updated',
+  TICKET_BATCH_DELETED: 'events.ticket-batch-deleted',
+
+  // Auth → Event domain — organizer replicado para event-service manter FK local.
+  // Só campos não-sensíveis: passwordHash/role/etc NUNCA trafegam. Auth é o
+  // único que sabe sobre autenticação (ver cap-04 "Responsabilidade única").
+  AUTH_ORGANIZER_CREATED: 'auth.organizer-created',
+  AUTH_ORGANIZER_UPDATED: 'auth.organizer-updated',
+
+  // Auth → Booking/Payment domain — buyer replicado para booking-service manter
+  // FK local em Reservation.buyerId. Mesmos princípios do organizer:
+  // passwordHash/emailVerifiedAt NUNCA trafegam.
+  AUTH_BUYER_CREATED: 'auth.buyer-created',
+  AUTH_BUYER_UPDATED: 'auth.buyer-updated',
 } as const;
 
 export type KafkaTopic = (typeof KAFKA_TOPICS)[keyof typeof KAFKA_TOPICS];
@@ -294,6 +313,30 @@ export const ReservationCreatedEventSchema = z.object({
 });
 
 export type ReservationCreatedEvent = z.infer<typeof ReservationCreatedEventSchema>;
+
+// ─── Organizer replicated (auth-service → event-service) ─────────────────────
+//
+// planSlug em vez de planId: plans são seedados em ambos os bancos mas com
+// UUIDs diferentes. O consumer resolve slug → planId local antes do upsert.
+export const OrganizerReplicatedEventSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  slug: z.string(),
+  planSlug: z.string(),
+});
+
+export type OrganizerReplicatedEvent = z.infer<typeof OrganizerReplicatedEventSchema>;
+
+// ─── Buyer replicated (auth-service → booking-service) ──────────────────────
+//
+// Mesmo padrão do organizer: só campos não-sensíveis.
+export const BuyerReplicatedEventSchema = z.object({
+  id: z.uuid(),
+  email: z.email(),
+  name: z.string().nullable(),
+});
+
+export type BuyerReplicatedEvent = z.infer<typeof BuyerReplicatedEventSchema>;
 ```
 
 ---
@@ -628,49 +671,38 @@ model Plan {
   @@map("plans")
 }
 
-// ─── Organizers ───────────────────────────────────────────────────────────────
+// ─── Organizers (replicados do auth-service via Kafka) ───────────────────────
+//
+// Este serviço NÃO é a fonte da verdade sobre organizers. O auth-service é o
+// único que conhece emails, senhas e roles (OWASP A02 — uma cópia só do hash).
+// Esta tabela existe apenas para:
+//   1. Servir de FK em Event.organizerId / Venue.organizerId (integridade local).
+//   2. Aplicar plan gates (maxVenues, maxActiveEvents) sem chamar o auth-service
+//      a cada request — acoplamento de rede seria pior que eventual consistency.
+//
+// O auth-service emite AUTH_ORGANIZER_CREATED/UPDATED; o OrganizersConsumer
+// deste serviço (ver cap-05) faz upsert com os campos não-sensíveis. Dados
+// como passwordHash, email, role, stripeCustomerId NUNCA trafegam.
 
 model Organizer {
-  id   String @id @default(uuid()) @db.Uuid
+  id   String @id @db.Uuid  // id vem do auth-service — sem @default
   name String
   slug String @unique
 
   planId String @db.Uuid
   plan   Plan   @relation(fields: [planId], references: [id])
 
-  stripeCustomerId String? @unique
+  // Timestamp da última replicação recebida. Útil para debug/observability
+  // (ver Kafka consumer lag em caso de dessincronia).
+  lastSyncAt DateTime?
 
-  planExpiresAt DateTime?
-  trialEndsAt   DateTime?
-
-  venues    Venue[]
-  events    Event[]
-  users     OrganizerUser[]
+  venues Venue[]
+  events Event[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@map("organizers")
-}
-
-model OrganizerUser {
-  id           String    @id @default(uuid()) @db.Uuid
-  organizerId  String    @db.Uuid
-  organizer    Organizer @relation(fields: [organizerId], references: [id])
-
-  name         String
-  email        String    @unique
-  passwordHash String
-  role         String    @default("member")  // "owner", "admin", "member"
-
-  emailVerifiedAt DateTime?
-  lastLoginAt     DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([organizerId, role])
-  @@map("organizer_users")
 }
 
 // ─── Venues ────────────────────────────────────────────────────────────────────
@@ -832,15 +864,18 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Buyer é REPLICADO do auth-service via Kafka (auth.buyer-*).
+// Este serviço NÃO é a fonte da verdade sobre compradores — existe aqui só
+// para servir de FK em Reservation.buyerId. Dados sensíveis (passwordHash,
+// emailVerifiedAt) NUNCA chegam aqui. Ver BuyersConsumer em cap-06 e
+// packages/types/kafka-topics.ts:BuyerReplicatedEventSchema.
 model Buyer {
-  id           String  @id @default(uuid()) @db.Uuid
-  name         String
-  email        String  @unique
-  passwordHash String
-  phone        String?
+  id    String  @id @db.Uuid  // id vem do auth-service — sem @default
+  name  String?
+  email String  @unique
 
-  emailVerifiedAt DateTime?
-  lastLoginAt     DateTime?
+  // Timestamp da última replicação — útil para debug/observability
+  lastSyncAt DateTime?
 
   reservations Reservation[]
 
@@ -1129,39 +1164,36 @@ Apenas Node.js local (sem Docker necessário para os testes abaixo).
 
 ### Passo a passo
 
-**1. Compilar os packages**
+**1. Type-check dos packages**
 
 ```bash
-pnpm --filter @showpass/types run build
-pnpm --filter @showpass/kafka run build
-pnpm --filter @showpass/redis run build
+pnpm --filter @showpass/types run type-check
+pnpm --filter @showpass/kafka run type-check
+pnpm --filter @showpass/redis run type-check
 ```
 
-Cada comando deve terminar sem erros de TypeScript.
+Cada comando deve terminar sem erros. Os pacotes internos não têm step de `build` — o `main` do `package.json` aponta direto para `src/index.ts`, e cada serviço consumidor transpila via SWC.
 
 **2. Validar schemas Zod no terminal**
 
-Abra um REPL Node.js dentro do pacote de tipos:
+A partir da raiz do monorepo, rode um REPL Node.js com o TypeScript loader:
 
 ```bash
-cd packages/types
-node --input-type=module
+node --experimental-strip-types --input-type=module
 ```
 
-Cole e pressione Enter:
+Cole e pressione Enter (os campos batem com o `CreateEventSchema` definido em `packages/types/src/events.ts`):
 
 ```javascript
-import { CreateEventSchema } from './dist/index.js';
+import { CreateEventSchema } from './packages/types/src/events.ts';
 const result = CreateEventSchema.safeParse({
   title: 'Rock in Rio 2025',
-  slug: 'rock-in-rio-2025',
   description: 'O maior festival do Brasil',
   categoryId: '018e1234-5678-7abc-def0-111213141516',
   venueId: '018e1234-5678-7abc-def0-111213141517',
-  startsAt: new Date(Date.now() + 86400000).toISOString(),
-  endsAt: new Date(Date.now() + 172800000).toISOString(),
+  startAt: new Date(Date.now() + 86400000).toISOString(),
+  endAt: new Date(Date.now() + 172800000).toISOString(),
   maxTicketsPerOrder: 4,
-  currency: 'BRL',
 });
 console.log(result.success ? 'OK ✓' : result.error.issues);
 ```

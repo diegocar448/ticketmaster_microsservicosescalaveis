@@ -428,14 +428,19 @@ docker compose logs -f postgres-replica | grep -v "checkpoint"
 **2. Fazer uma query de leitura e uma de escrita**
 
 ```bash
-# Leitura: buscar evento (deve aparecer só no log da replica)
-curl http://localhost:3004/reservations?eventId=$EVENT_ID \
+# Leitura: listar reservas (deve aparecer só no log da replica)
+curl "http://localhost:3004/bookings/reservations?eventId=$EVENT_ID" \
   -H "Authorization: Bearer $BUYER_TOKEN"
 
-# Escrita: criar reserva (deve aparecer só no log do primary)
-curl -X POST http://localhost:3004/reservations \
+# Escrita: criar reserva (deve aparecer só no log do primary).
+# DTO atualizado do cap-06: items[] com ticketBatchId + seatId.
+curl -X POST http://localhost:3004/bookings/reservations \
   -H "Authorization: Bearer $BUYER_TOKEN" \
-  -d "{\"eventId\":\"$EVENT_ID\",\"seatIds\":[\"$SEAT_ID\"]}"
+  -H "Content-Type: application/json" \
+  -d "{
+    \"eventId\":\"$EVENT_ID\",
+    \"items\":[{\"ticketBatchId\":\"$BATCH_PISTA_ID\",\"seatId\":\"$SEAT_ID\",\"quantity\":1}]
+  }"
 ```
 
 ### Testando Circuit Breaker (Passo 18.3)
@@ -448,9 +453,13 @@ curl -X POST http://localhost:3004/reservations \
 
 # Fazer 5 requests ao booking-service (que depende do event-service via gRPC)
 for i in {1..5}; do
-  curl -s -X POST http://localhost:3004/reservations \
+  curl -s -X POST http://localhost:3004/bookings/reservations \
     -H "Authorization: Bearer $BUYER_TOKEN" \
-    -d "{\"eventId\":\"$EVENT_ID\",\"seatIds\":[\"$SEAT_ID\"]}" | jq .statusCode
+    -H "Content-Type: application/json" \
+    -d "{
+      \"eventId\":\"$EVENT_ID\",
+      \"items\":[{\"ticketBatchId\":\"$BATCH_PISTA_ID\",\"seatId\":\"$SEAT_ID\",\"quantity\":1}]
+    }" | jq .statusCode
 done
 ```
 

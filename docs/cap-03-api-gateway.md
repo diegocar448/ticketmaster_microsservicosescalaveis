@@ -182,8 +182,14 @@ import { LoggerMiddleware } from './common/middleware/logger.middleware';
       },
     ]),
 
-    ProxyModule,
+    // HealthModule ANTES de ProxyModule — o ProxyController registra @All('*')
+    // que captura qualquer path, incluindo /health/*. Em Express, a PRIMEIRA
+    // rota registrada vence, então as rotas específicas (/health/live,
+    // /health/ready) precisam ser montadas antes do wildcard. Sem essa ordem
+    // o probe de liveness do K8s bate no proxy, que tenta resolver /health
+    // como serviço downstream e devolve 404 (ver scripts/dev.sh e CAP-17).
     HealthModule,
+    ProxyModule,
   ],
 })
 export class AppModule implements NestModule {
@@ -976,13 +982,24 @@ Resposta esperada:
 curl http://localhost:3000/health/ready
 ```
 
-Resposta esperada:
+Resposta esperada (formato padrão do `@nestjs/terminus`):
 
 ```json
-{ "status": "ok", "services": { "redis": "ok" } }
+{
+  "status": "ok",
+  "info": {
+    "event-service": { "status": "up" },
+    "booking-service": { "status": "up" }
+  },
+  "error": {},
+  "details": {
+    "event-service": { "status": "up" },
+    "booking-service": { "status": "up" }
+  }
+}
 ```
 
-Se Redis não estiver rodando, você verá `"redis": "degraded"`.
+Se um dos serviços downstream estiver fora do ar, você verá `"status": "error"` com o serviço em questão movido de `info` para `error`.
 
 **3. Verificar rejeição de request sem token**
 

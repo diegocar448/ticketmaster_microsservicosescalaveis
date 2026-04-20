@@ -14,6 +14,9 @@ import {
   Logger,
 } from '@nestjs/common';
 import bcrypt from 'bcrypt';
+import { KafkaProducerService } from '@showpass/kafka';
+import { KAFKA_TOPICS } from '@showpass/types';
+import type { OrganizerReplicatedEvent } from '@showpass/types';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { TokenService } from './token.service.js';
 import type { TokenPair } from './token.service.js';
@@ -36,6 +39,7 @@ export class OrganizerAuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokenService: TokenService,
+    private readonly kafka: KafkaProducerService,
   ) {}
 
   async register(dto: RegisterOrganizerDto): Promise<TokenPair> {
@@ -58,8 +62,8 @@ export class OrganizerAuthService {
     });
 
     // Criar organizer + user em transação atômica
-    const user = await this.prisma.$transaction(async (tx) => {
-      const organizer = await tx.organizer.create({
+    const { organizer, user } = await this.prisma.$transaction(async (tx) => {
+      const newOrganizer = await tx.organizer.create({
         data: {
           name: dto.organizationName,
           slug: this.slugify(dto.organizationName),
@@ -69,18 +73,40 @@ export class OrganizerAuthService {
         },
       });
 
-      return tx.organizerUser.create({
+      const newUser = await tx.organizerUser.create({
         data: {
-          organizerId: organizer.id,
+          organizerId: newOrganizer.id,
           name: dto.name,
           email: dto.email,
           passwordHash,
           role: 'owner',
         },
       });
+
+      return { organizer: newOrganizer, user: newUser };
     });
 
     this.logger.log(`Novo organizer registrado: userId=${user.id}`);
+
+    // Replicação assíncrona para event-service — só campos não-sensíveis.
+    // planSlug (não planId) porque os dois bancos têm UUIDs diferentes para
+    // o mesmo plano — o consumer resolve slug → planId local antes do upsert.
+    // Emitimos FORA da transação: se o Kafka estiver down, o registro não deve
+    // falhar. Trade-off: se o emit falhar depois do commit, ficamos com
+    // dessincronia temporária. Em prod: usar outbox pattern (tabela local +
+    // relay async) — para o tutorial, aceito o risco.
+    const event: OrganizerReplicatedEvent = {
+      id: organizer.id,
+      name: organizer.name,
+      slug: organizer.slug,
+      planSlug: freePlan.slug,
+    };
+    try {
+      await this.kafka.emit(KAFKA_TOPICS.AUTH_ORGANIZER_CREATED, event, organizer.id);
+    } catch (err) {
+      // Log mas não relança — registro foi bem-sucedido, replicação é eventually consistent
+      this.logger.error(`Falha ao publicar AUTH_ORGANIZER_CREATED: organizerId=${organizer.id}`, err);
+    }
 
     return this.tokenService.issueTokenPair(
       {

@@ -822,6 +822,217 @@ Impacto do cache em picos de evento:
 
 ---
 
+## Passo 5.9 — Organizer Replicated Consumer (bounded context)
+
+> **Por que o event-service tem uma tabela `organizers` se o auth-service já tem?**
+>
+> Event/Venue têm FK para Organizer. Se o event-service não tivesse tabela
+> local, cada `INSERT INTO events` viraria chamada HTTP/gRPC para o auth-service
+> só para validar a existência do organizerId — latência e acoplamento
+> inaceitáveis em picos de ingresso.
+>
+> A solução: **replicação assíncrona via Kafka**. O auth-service é a fonte da
+> verdade (conhece email/passwordHash/role), e emite `AUTH_ORGANIZER_CREATED`
+> após registrar. O event-service consome o evento e faz upsert local com
+> **só os campos não-sensíveis**. Trade-off: eventual consistency (delay típico
+> <1s). Contratos: ver `OrganizerReplicatedEventSchema` em `packages/types`.
+
+```typescript
+// apps/event-service/src/modules/organizers/organizers.consumer.ts
+
+import { Controller, Logger } from '@nestjs/common';
+import { EventPattern, Payload } from '@nestjs/microservices';
+import { PrismaService } from '../../prisma/prisma.service.js';
+import {
+  KAFKA_TOPICS,
+  OrganizerReplicatedEventSchema,
+} from '@showpass/types';
+
+@Controller()
+export class OrganizersConsumer {
+  private readonly logger = new Logger(OrganizersConsumer.name);
+
+  constructor(private readonly prisma: PrismaService) {}
+
+  @EventPattern(KAFKA_TOPICS.AUTH_ORGANIZER_CREATED)
+  async onCreated(@Payload() rawPayload: unknown): Promise<void> {
+    await this.upsertOrganizer(rawPayload, 'AUTH_ORGANIZER_CREATED');
+  }
+
+  @EventPattern(KAFKA_TOPICS.AUTH_ORGANIZER_UPDATED)
+  async onUpdated(@Payload() rawPayload: unknown): Promise<void> {
+    await this.upsertOrganizer(rawPayload, 'AUTH_ORGANIZER_UPDATED');
+  }
+
+  private async upsertOrganizer(rawPayload: unknown, topic: string): Promise<void> {
+    // Validar payload com Zod antes de tocar no banco — defesa em profundidade.
+    const parsed = OrganizerReplicatedEventSchema.safeParse(rawPayload);
+    if (!parsed.success) {
+      this.logger.error(`Payload inválido em ${topic}`, { errors: parsed.error.issues });
+      // NÃO relançar: nack infinito bloqueia a partição. Em prod → DLQ.
+      return;
+    }
+
+    const event = parsed.data;
+
+    // planSlug → planId local. Plans são seedados em ambos os bancos com os
+    // mesmos slugs (free/pro/enterprise), mas com UUIDs distintos.
+    const plan = await this.prisma.plan.findUnique({
+      where: { slug: event.planSlug },
+      select: { id: true },
+    });
+    if (!plan) {
+      this.logger.error(`${topic}: plan "${event.planSlug}" não existe — rode o seed antes`);
+      return;
+    }
+
+    // Upsert (não create) — idempotência: mesma mensagem pode chegar 2×
+    // em caso de crash antes do commit do offset no Kafka.
+    await this.prisma.organizer.upsert({
+      where: { id: event.id },
+      create: {
+        id: event.id,
+        name: event.name,
+        slug: event.slug,
+        planId: plan.id,
+        lastSyncAt: new Date(),
+      },
+      update: {
+        name: event.name,
+        slug: event.slug,
+        planId: plan.id,
+        lastSyncAt: new Date(),
+      },
+    });
+
+    this.logger.log(`Organizer replicado (${topic}): id=${event.id}, slug=${event.slug}`);
+  }
+}
+```
+
+### Hybrid App — servir HTTP e consumir Kafka no mesmo processo
+
+O event-service é ao mesmo tempo **producer** (emite `events.ticket-batch-*`)
+e **consumer** (recebe `auth.organizer-*`). Ambos coexistem via
+`connectMicroservice` + `startAllMicroservices()`:
+
+```typescript
+// apps/event-service/src/main.ts
+
+import 'dotenv/config';
+import 'reflect-metadata';
+import { NestFactory } from '@nestjs/core';
+import { Transport } from '@nestjs/microservices';
+import type { MicroserviceOptions } from '@nestjs/microservices';
+import { Logger } from '@nestjs/common';
+import { AppModule } from './app.module.js';
+
+async function bootstrap(): Promise<void> {
+  const app = await NestFactory.create(AppModule);
+
+  // Consumer Kafka — ativa os @EventPattern do OrganizersConsumer
+  app.connectMicroservice<MicroserviceOptions>({
+    transport: Transport.KAFKA,
+    options: {
+      client: {
+        clientId: process.env['KAFKA_CLIENT_ID'] ?? 'event-service',
+        brokers: (process.env['KAFKA_BROKERS'] ?? 'localhost:29092').split(','),
+      },
+      consumer: {
+        // groupId SEPARADO do producer — evita conflito de offsets na mesma app.
+        // Escalar event-service em N réplicas distribui as partições entre elas.
+        groupId: process.env['KAFKA_CONSUMER_GROUP_ID'] ?? 'event-service-consumer',
+        allowAutoTopicCreation: false,
+      },
+    },
+  });
+
+  await app.startAllMicroservices();
+
+  const port = parseInt(process.env['PORT'] ?? '3003', 10);
+  await app.listen(port);
+  Logger.log(`Event Service rodando na porta ${port}`);
+  Logger.log('Kafka consumer ativo (auth.organizer-*)');
+}
+
+void bootstrap();
+```
+
+> Adicione `KAFKA_CONSUMER_GROUP_ID=event-service-consumer` ao `.env`.
+> Em `AppModule`, importe `OrganizersModule` (ver pasta `modules/organizers/`)
+> junto com os demais módulos.
+
+> **Gotcha — tópicos precisam existir antes do boot**: com `allowAutoTopicCreation: false`,
+> se o consumer tentar se inscrever em um tópico que ainda não existe (ex:
+> `auth.organizer-updated` antes de qualquer UPDATE no auth-service), o kafkajs
+> aborta o processo com `UNKNOWN_TOPIC_OR_PARTITION`. Em dev, pré-crie os tópicos
+> uma única vez após subir a infra:
+>
+> ```bash
+> for t in auth.organizer-created auth.organizer-updated \
+>          auth.buyer-created auth.buyer-updated \
+>          events.ticket-batch-created events.ticket-batch-updated events.ticket-batch-deleted \
+>          events.event-published events.event-updated events.event-cancelled \
+>          bookings.reservation-created bookings.reservation-expired bookings.reservation-cancelled \
+>          payments.order-created payments.payment-confirmed payments.payment-failed payments.refund-processed; do
+>   docker exec ticketmaster_microsserviosescalaveis-kafka-1 \
+>     /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
+>     --create --topic "$t" --partitions 3 --replication-factor 1 --if-not-exists
+> done
+> ```
+>
+> Em produção isso vira Terraform (ver cap-18) ou um Init Container do K8s.
+
+### Health endpoint para o readiness do gateway
+
+O `api-gateway` bate em `http://event-service:3003/health/live` no seu readiness
+check (cap-03). Adicione um endpoint mínimo em `src/modules/health/`:
+
+```typescript
+// apps/event-service/src/modules/health/health.controller.ts
+import { Controller, Get } from '@nestjs/common';
+
+@Controller('health')
+export class HealthController {
+  @Get('live')
+  liveness(): { status: string; service: string } {
+    return { status: 'ok', service: 'event-service' };
+  }
+}
+```
+
+```typescript
+// apps/event-service/src/modules/health/health.module.ts
+import { Module } from '@nestjs/common';
+import { HealthController } from './health.controller.js';
+
+@Module({ controllers: [HealthController] })
+export class HealthModule {}
+```
+
+Importe `HealthModule` no `AppModule` (antes dos módulos de feature — liveness
+precisa responder mesmo se o resto do app estiver degradado).
+
+### Migração: simplificar o schema herdado de cap-02
+
+Se você está trazendo o projeto do cap-02, o event-service ainda tem a tabela
+`organizer_users` e colunas sensíveis (`passwordHash`, `stripeCustomerId`).
+Aplicar a migration `simplify_organizer_replication`:
+
+```bash
+cd apps/event-service
+# Com o schema novo (ver cap-02), Prisma gera a migration automaticamente:
+pnpm db:migrate --name simplify_organizer_replication
+```
+
+A migration drop-a a tabela `organizer_users` e remove de `organizers` as
+colunas `passwordHash` (nunca deveria ter estado aqui), `stripeCustomerId`,
+`planExpiresAt`, `trialEndsAt` — tudo isso vive só no auth-service. Se houver
+organizers pré-existentes no event-service, eles precisam ser "backfillados"
+(em prod: re-emitir eventos do auth; em dev: `INSERT` direto).
+
+---
+
 ## Testando na prática
 
 A partir daqui você cria o primeiro recurso de negócio real: venue + evento. Você precisa do token de organizer do Cap 04.
@@ -860,95 +1071,167 @@ echo "Token: $TOKEN"
 
 ### Passo a passo
 
+O fluxo canônico de um organizer em produção é:
+
+1. Criar o **venue** (local + seções + assentos).
+2. Consultar a **categoria** do evento.
+3. Criar o **evento** (nasce em `draft`).
+4. Configurar os **lotes de ingressos** (`TicketBatch`) referenciando seções do venue — é aqui que o preço e a quantidade são definidos.
+5. **Publicar** o evento (`draft` → `published`).
+6. **Abrir venda** (`published` → `on_sale`) — só agora o booking-service aceita reservas.
+
+A ordem de 1→6 importa: só podemos reservar ingressos de um lote que exista. Se abrir venda antes de criar lotes, o comprador tentaria reservar algo inexistente e receberia 409.
+
 **1. Criar um venue (com geração de assentos)**
 
+O body combina dados do venue com a definição das seções. `seatingType: "reserved"` gera assentos numerados (A1..A20, B1..B20...). Chunks internos de 500 INSERTs garantem que gerar 8 000 assentos leve ~50 ms.
+
 ```bash
-curl -s -X POST http://localhost:3003/venues \
+VENUE_JSON=$(curl -s -X POST http://localhost:3003/venues \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Estádio do Maracanã",
+    "address": "Av. Presidente Castelo Branco, s/n",
     "city": "Rio de Janeiro",
     "state": "RJ",
-    "country": "BR",
-    "address": "Av. Presidente Castelo Branco, s/n",
-    "zipCode": "20271-130",
-    "capacity": 78838,
-    "rows": 100,
-    "seatsPerRow": 80
-  }' | jq .
+    "zipCode": "20271130",
+    "latitude": -22.912,
+    "longitude": -43.230,
+    "capacity": 8000,
+    "sections": [
+      {
+        "name": "Pista",
+        "seatingType": "reserved",
+        "rows": ["A","B","C","D","E","F","G","H","I","J"],
+        "seatsPerRow": 20
+      },
+      {
+        "name": "Cadeira VIP",
+        "seatingType": "reserved",
+        "rows": ["V1","V2","V3","V4","V5"],
+        "seatsPerRow": 20
+      }
+    ]
+  }')
+
+VENUE_ID=$(echo "$VENUE_JSON" | jq -r '.id')
+echo "VENUE_ID=$VENUE_ID"
 ```
 
-Resposta esperada:
+> **zipCode sem hífen:** o schema valida `/^\d{8}$/` — apenas dígitos. Em produção, sanitize no frontend.
 
-```json
-{
-  "id": "018e1234-5678-7abc-def0-111213141516",
-  "name": "Estádio do Maracanã",
-  "city": "Rio de Janeiro",
-  "state": "RJ",
-  "capacity": 78838,
-  "totalSeats": 8000
-}
-```
+> **latitude/longitude obrigatórios:** o schema exige para permitir busca geográfica (cap-08, Elasticsearch geo_point).
 
-Salve o `id` do venue:
+**2. Listar seções do venue (para associar aos lotes)**
 
 ```bash
-VENUE_ID="018e1234-..."   # substitua pelo id retornado
+# GET /venues/:id retorna o venue com sections[] e seats[]
+VENUE_DETAIL=$(curl -s http://localhost:3003/venues/$VENUE_ID \
+  -H "Authorization: Bearer $TOKEN")
+
+SECTION_PISTA_ID=$(echo "$VENUE_DETAIL" | jq -r '.sections[] | select(.name=="Pista") | .id')
+SECTION_VIP_ID=$(echo "$VENUE_DETAIL"   | jq -r '.sections[] | select(.name=="Cadeira VIP") | .id')
+
+echo "SECTION_PISTA_ID=$SECTION_PISTA_ID"
+echo "SECTION_VIP_ID=$SECTION_VIP_ID"
 ```
 
-**2. Buscar o ID da categoria**
+**3. Buscar o ID da categoria**
 
 ```bash
-curl -s http://localhost:3003/categories | jq .
+CATEGORY_ID=$(curl -s http://localhost:3003/categories \
+  | jq -r '.[] | select(.slug=="shows-musica") | .id')
+echo "CATEGORY_ID=$CATEGORY_ID"
 ```
 
-Salve um `id`:
+A rota `GET /categories` é pública (compradores também a usam no frontend público).
+
+**4. Criar um evento**
+
+Os nomes dos campos seguem o `CreateEventSchema` em `@showpass/types`:
+`startAt`/`endAt` (singular), `thumbnailUrl` opcional, `maxTicketsPerOrder` default 4.
+O `slug` é gerado pelo service (`title + timestamp`) — não mandar no body.
 
 ```bash
-CATEGORY_ID="018e..."   # substitua pelo id retornado
-```
-
-**3. Criar um evento**
-
-```bash
-curl -s -X POST http://localhost:3003/events \
+EVENT_JSON=$(curl -s -X POST http://localhost:3003/events \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d "{
     \"title\": \"Rock in Rio 2025\",
-    \"slug\": \"rock-in-rio-2025\",
     \"description\": \"O maior festival do Brasil\",
     \"categoryId\": \"$CATEGORY_ID\",
     \"venueId\": \"$VENUE_ID\",
-    \"startsAt\": \"2025-09-26T18:00:00.000Z\",
-    \"endsAt\": \"2025-10-05T23:59:00.000Z\",
-    \"maxTicketsPerOrder\": 4,
-    \"currency\": \"BRL\"
-  }" | jq .
+    \"startAt\": \"2025-09-26T18:00:00.000Z\",
+    \"endAt\":   \"2025-10-05T23:59:00.000Z\",
+    \"maxTicketsPerOrder\": 4
+  }")
+
+EVENT_ID=$(echo "$EVENT_JSON" | jq -r '.id')
+EVENT_SLUG=$(echo "$EVENT_JSON" | jq -r '.slug')
+echo "EVENT_ID=$EVENT_ID  SLUG=$EVENT_SLUG"
 ```
 
-Resposta esperada:
+> **Atenção ao slug gerado:** como ele contém um timestamp, não será exatamente `rock-in-rio-2025`. Nos próximos comandos use a variável `$EVENT_SLUG`. Se quiser um slug fixo para o tutorial (`rock-in-rio-2025`), ajuste manualmente via Prisma Studio (`make db-studio SERVICE=event-service`) — vamos usar o slug exato em cap-06 para deep-linking.
 
-```json
-{
-  "id": "018e9999-...",
-  "title": "Rock in Rio 2025",
-  "slug": "rock-in-rio-2025",
-  "status": "draft",
-  "venue": { "name": "Estádio do Maracanã", "city": "Rio de Janeiro", "state": "RJ" },
-  "category": { "name": "Música", "slug": "musica" }
-}
-```
+**5. Criar os lotes de ingressos (TicketBatches)**
 
-Salve o `id` e o `slug`:
+Cada lote define preço, quantidade e janela de venda. Um lote pode ser escopo a uma seção específica (`sectionId`) ou ao evento inteiro (`sectionId` omitido → válido em qualquer seção).
+
+No momento que este endpoint responde, o event-service emite um evento Kafka `events.ticket-batch-created`. O **booking-service consome** e replica o lote no seu banco local — é o mecanismo que permite que, no cap-06, `prisma.ticketBatch.findUniqueOrThrow()` no booking-service encontre o lote recém-criado sem precisar ligar de volta ao event-service.
 
 ```bash
-EVENT_ID="018e9999-..."
+# Lote 1: Pista — R$ 200, 200 ingressos
+BATCH_PISTA_JSON=$(curl -s -X POST http://localhost:3003/events/$EVENT_ID/ticket-batches \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"name\": \"Pista\",
+    \"price\": 200.00,
+    \"totalQuantity\": 200,
+    \"saleStartAt\": \"2025-04-01T10:00:00.000Z\",
+    \"saleEndAt\":   \"2025-09-26T23:00:00.000Z\",
+    \"sectionId\": \"$SECTION_PISTA_ID\"
+  }")
+
+BATCH_PISTA_ID=$(echo "$BATCH_PISTA_JSON" | jq -r '.id')
+echo "BATCH_PISTA_ID=$BATCH_PISTA_ID"
+
+# Lote 2: Cadeira VIP — R$ 500, 100 ingressos
+BATCH_VIP_JSON=$(curl -s -X POST http://localhost:3003/events/$EVENT_ID/ticket-batches \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"name\": \"Cadeira VIP\",
+    \"price\": 500.00,
+    \"totalQuantity\": 100,
+    \"saleStartAt\": \"2025-04-01T10:00:00.000Z\",
+    \"saleEndAt\":   \"2025-09-26T23:00:00.000Z\",
+    \"sectionId\": \"$SECTION_VIP_ID\"
+  }")
+
+BATCH_VIP_ID=$(echo "$BATCH_VIP_JSON" | jq -r '.id')
+echo "BATCH_VIP_ID=$BATCH_VIP_ID"
 ```
 
-**4. Publicar o evento (draft → published)**
+Listar os lotes criados:
+
+```bash
+curl -s http://localhost:3003/events/$EVENT_ID/ticket-batches \
+  -H "Authorization: Bearer $TOKEN" | jq '.[] | {id, name, price, totalQuantity, isVisible}'
+```
+
+Confirmar a replicação no booking-service (**se** ele estiver rodando):
+
+```bash
+# Consulta direta ao Postgres do booking (não é endpoint HTTP)
+docker compose exec postgres psql -U booking_svc -d showpass_booking \
+  -c "SELECT id, name, price, total_quantity, sale_start_at FROM ticket_batches;"
+```
+
+Se você criou os lotes antes de subir o booking-service, não tem problema: Kafka retém as mensagens por 7 dias por default. Ao subir o consumer do booking-service, ele lerá do offset mais antigo do consumer group e preencherá a réplica. Esse é o comportamento clássico de **event-driven architecture com durable log**.
+
+**6. Publicar o evento (draft → published)**
 
 ```bash
 curl -s -X PATCH http://localhost:3003/events/$EVENT_ID/status \
@@ -959,7 +1242,7 @@ curl -s -X PATCH http://localhost:3003/events/$EVENT_ID/status \
 
 Resposta esperada: `"published"`
 
-**5. Colocar à venda (published → on_sale)**
+**7. Colocar à venda (published → on_sale)**
 
 ```bash
 curl -s -X PATCH http://localhost:3003/events/$EVENT_ID/status \
@@ -968,15 +1251,19 @@ curl -s -X PATCH http://localhost:3003/events/$EVENT_ID/status \
   -d '{"status": "on_sale"}' | jq .status
 ```
 
-**6. Buscar evento por slug (sem autenticação)**
+Agora sim o booking-service aceitará reservas para este evento (cap-06).
+
+**8. Buscar evento por slug (sem autenticação)**
 
 ```bash
-curl -s http://localhost:3003/events/rock-in-rio-2025 | jq .
+curl -s http://localhost:3003/events/$EVENT_SLUG/public | jq '{id, status, ticketBatches: [.ticketBatches[] | {name, price, totalQuantity}]}'
 ```
 
-Chame duas vezes e observe que a segunda é mais rápida — o Redis cache foi populado na primeira chamada.
+> **Repare no endpoint `/public`:** é a rota pública usada pelo frontend do comprador. `GET /events/:slug` (sem `/public`) **exige** OrganizerGuard — usada pelo dashboard do organizer.
 
-**7. Testar transição inválida de status**
+Chame duas vezes e observe que a segunda é mais rápida — o Redis cache foi populado na primeira chamada (TTL 30s quando status = on_sale).
+
+**9. Testar transição inválida de status**
 
 ```bash
 # Tentar voltar de on_sale para draft (inválido)

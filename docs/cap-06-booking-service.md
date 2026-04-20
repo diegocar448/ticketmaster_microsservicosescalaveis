@@ -690,6 +690,430 @@ export class ReservationsController {
 
 ---
 
+## Passo 6.5 — BuyerGuard e ZodValidationPipe
+
+O controller importa dois utilitários que precisam existir no próprio serviço.
+
+```typescript
+// apps/booking-service/src/common/guards/buyer.guard.ts
+//
+// Protege endpoints exclusivos de compradores.
+// Headers são injetados pelo Gateway após validação do JWT.
+
+import {
+  CanActivate,
+  ExecutionContext,
+  Injectable,
+  UnauthorizedException,
+  ForbiddenException,
+} from '@nestjs/common';
+import type { Request } from 'express';
+
+@Injectable()
+export class BuyerGuard implements CanActivate {
+  canActivate(context: ExecutionContext): boolean {
+    const request = context.switchToHttp().getRequest<Request>();
+
+    const userId = request.headers['x-user-id'];
+    const userType = request.headers['x-user-type'];
+
+    if (!userId) {
+      throw new UnauthorizedException('Não autenticado');
+    }
+
+    if (userType !== 'buyer') {
+      throw new ForbiddenException('Acesso exclusivo para compradores');
+    }
+
+    return true;
+  }
+}
+```
+
+```typescript
+// apps/booking-service/src/common/pipes/zod-validation.pipe.ts
+//
+// Pipe NestJS que valida o body usando um Zod schema.
+// Se inválido: retorna 400 com erros detalhados (mas seguros — não expõe implementação).
+
+import { PipeTransform, Injectable, BadRequestException } from '@nestjs/common';
+import type { ZodType } from 'zod';
+
+@Injectable()
+export class ZodValidationPipe<T> implements PipeTransform {
+  constructor(private readonly schema: ZodType<T>) {}
+
+  transform(value: unknown): T {
+    const result = this.schema.safeParse(value);
+
+    if (!result.success) {
+      // Zod 4 usa .issues (renomeado de .errors em v3)
+      const errors = result.error.issues.map((e) => ({
+        field: e.path.join('.'),
+        message: e.message,
+      }));
+
+      throw new BadRequestException({
+        message: 'Dados de entrada inválidos',
+        errors,
+      });
+    }
+
+    return result.data;
+  }
+}
+```
+
+---
+
+## Passo 6.6 — LocksModule
+
+```typescript
+// apps/booking-service/src/modules/locks/locks.module.ts
+//
+// Módulo de locks distribuídos — exporta SeatLockService para ser
+// injetado no ReservationsModule sem duplicar a instância do Redis.
+
+import { Module } from '@nestjs/common';
+import { SeatLockService } from './seat-lock.service.js';
+
+// RedisModule não é importado aqui porque foi registrado como global
+// no AppModule via RedisModule.forRoot() — já disponível para injeção.
+@Module({
+  providers: [SeatLockService],
+  exports: [SeatLockService],
+})
+// eslint-disable-next-line @typescript-eslint/no-extraneous-class -- padrão NestJS
+export class LocksModule {}
+```
+
+---
+
+## Passo 6.7 — ReservationsModule
+
+```typescript
+// apps/booking-service/src/modules/reservations/reservations.module.ts
+//
+// Módulo de reservas — agrega controller, service, job de expiração
+// e as dependências externas (Redis via LocksModule, Kafka, Prisma).
+
+import { Module } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
+import { PrismaService } from '../../prisma/prisma.service.js';
+import { LocksModule } from '../locks/locks.module.js';
+import { ReservationsController } from './reservations.controller.js';
+import { ReservationsService } from './reservations.service.js';
+import { ReservationExpirationJob } from './reservation-expiration.job.js';
+
+// Redis e Kafka não são importados aqui — foram registrados como global
+// no AppModule via forRoot(). Já estão disponíveis para injeção.
+@Module({
+  imports: [
+    LocksModule,
+    ScheduleModule.forRoot(),
+  ],
+  controllers: [ReservationsController],
+  providers: [ReservationsService, ReservationExpirationJob, PrismaService],
+})
+// eslint-disable-next-line @typescript-eslint/no-extraneous-class -- padrão NestJS
+export class ReservationsModule {}
+```
+
+---
+
+## Passo 6.8 — AppModule
+
+```typescript
+// apps/booking-service/src/app.module.ts
+//
+// Módulo raiz do Booking Service.
+// RedisModule.forRoot() e KafkaModule.forRoot() com global:true —
+// disponíveis em todos os módulos filhos sem precisar reimportar.
+
+import { Module } from '@nestjs/common';
+import { RedisModule } from '@showpass/redis';
+import { KafkaModule } from '@showpass/kafka';
+import { ReservationsModule } from './modules/reservations/reservations.module.js';
+import { TicketBatchesModule } from './modules/ticket-batches/ticket-batches.module.js';
+import { BuyersModule } from './modules/buyers/buyers.module.js';
+
+@Module({
+  imports: [
+    // Redis global — SeatLockService injeta RedisService sem importar RedisModule novamente
+    RedisModule.forRoot({
+      host: process.env['REDIS_HOST'] ?? 'localhost',
+      port: parseInt(process.env['REDIS_PORT'] ?? '6379', 10),
+      password: process.env['REDIS_PASSWORD'],
+    }),
+    // Kafka global — ReservationsService injeta KafkaProducerService
+    KafkaModule.forRoot({
+      clientId: process.env['KAFKA_CLIENT_ID'] ?? 'booking-service',
+      brokers: (process.env['KAFKA_BROKERS'] ?? 'localhost:29092').split(','),
+      groupId: process.env['KAFKA_GROUP_ID'] ?? 'booking-service-group',
+    }),
+    ReservationsModule,
+    // Consumer Kafka: mantém réplica local de TicketBatch atualizada
+    TicketBatchesModule,
+    // Consumer Kafka: replica buyer do auth-service para satisfazer FK
+    // Reservation.buyerId. Dados sensíveis (passwordHash) NUNCA trafegam.
+    BuyersModule,
+  ],
+})
+// eslint-disable-next-line @typescript-eslint/no-extraneous-class -- padrão NestJS
+export class AppModule {}
+```
+
+---
+
+## Passo 6.9 — main.ts
+
+```typescript
+// apps/booking-service/src/main.ts
+// Ponto de entrada do Booking Service — núcleo do anti-double-booking.
+// ATENÇÃO: ver apps/booking-service/CLAUDE.md antes de qualquer alteração.
+//
+// Hybrid app: HTTP (reservations) + Kafka consumer (réplica de TicketBatch).
+// O booking-service consome events.ticket-batch-{created,updated,deleted}
+// emitidos pelo event-service para manter sua tabela `ticket_batches` sincronizada.
+// Por que réplica local em vez de chamada síncrona? No cap-06 precisamos validar
+// disponibilidade do lote em milissegundos — uma chamada HTTP cross-service por
+// reserva violaria o requisito de latência sob 300k compradores concorrentes.
+
+import 'dotenv/config';
+import 'reflect-metadata';
+import { NestFactory } from '@nestjs/core';
+import { Transport } from '@nestjs/microservices';
+import type { MicroserviceOptions } from '@nestjs/microservices';
+import { AppModule } from './app.module.js';
+import { Logger } from '@nestjs/common';
+
+async function bootstrap(): Promise<void> {
+  const app = await NestFactory.create(AppModule);
+
+  // ─── Kafka consumer (hybrid app) ───────────────────────────────────────────
+  // connectMicroservice + startAllMicroservices ativa os @EventPattern dos
+  // controllers sem precisar de um processo separado.
+  app.connectMicroservice<MicroserviceOptions>({
+    transport: Transport.KAFKA,
+    options: {
+      client: {
+        clientId: process.env['KAFKA_CLIENT_ID'] ?? 'booking-service',
+        brokers: (process.env['KAFKA_BROKERS'] ?? 'localhost:29092').split(','),
+      },
+      consumer: {
+        // groupId SEPARADO do producer. Em Kafka, cada consumer group recebe
+        // sua cópia completa dos eventos — por isso usamos um group distinto
+        // do group padrão que o KafkaProducerService pode criar.
+        groupId: process.env['KAFKA_CONSUMER_GROUP_ID'] ?? 'booking-service-consumer',
+        allowAutoTopicCreation: false,
+      },
+    },
+  });
+
+  await app.startAllMicroservices();
+
+  const port = parseInt(process.env['PORT'] ?? '3004', 10);
+  await app.listen(port);
+  Logger.log(`Booking Service rodando na porta ${port}`);
+  Logger.log('Kafka consumer ativo (events.ticket-batch-*, auth.buyer-*)');
+}
+
+void bootstrap();
+```
+
+> **Gotcha — `@nestjs/schedule` v6:** o enum `CronExpression.EVERY_2_MINUTES` foi removido nessa versão. Use a expressão cron literal `'*/2 * * * *'` no `@Cron()` decorator do `ReservationExpirationJob`.
+
+> **Gotcha — tópicos precisam existir antes do boot:** com `allowAutoTopicCreation: false`,
+> se o consumer não encontrar `events.ticket-batch-*` ou `auth.buyer-*` no broker
+> ele derruba o processo com `UNKNOWN_TOPIC_OR_PARTITION`. Siga o mesmo script
+> de pré-criação listado em cap-05 (ou em produção, um Init Container no K8s).
+
+### Health endpoint para o readiness do gateway
+
+O `api-gateway` consulta `http://booking-service:3004/health/live` no seu
+readiness (cap-03). Adicione o mesmo padrão que foi usado no event-service:
+
+```typescript
+// apps/booking-service/src/modules/health/health.controller.ts
+import { Controller, Get } from '@nestjs/common';
+
+@Controller('health')
+export class HealthController {
+  @Get('live')
+  liveness(): { status: string; service: string } {
+    return { status: 'ok', service: 'booking-service' };
+  }
+}
+```
+
+Não precisa checar Redis/Kafka aqui — o liveness responde "o processo está
+vivo?". Health check de dependências (readiness) é responsabilidade do gateway.
+Importe `HealthModule` no `AppModule` antes dos módulos de feature.
+
+---
+
+## Passo 6.10 — Buyer Replicated Consumer (bounded context)
+
+### Por que o booking-service tem sua própria tabela `buyers`?
+
+`Reservation.buyerId` é FK **local** — sem um registro correspondente em `buyers`, o INSERT da reserva falha com `P2003`. Mas o **dono** do cadastro de buyer é o `auth-service` (ele guarda `passwordHash`, `emailVerifiedAt`, etc.). A solução é o mesmo padrão usado em `event-service` para organizers: **replicação via Kafka** com apenas os campos não-sensíveis.
+
+Princípio OWASP A02: `passwordHash` existe em **um único lugar** — o `auth-service`. Se um atacante comprometer o booking-service, ele encontra `id`, `email`, `name` e nada mais.
+
+### Schema simplificado
+
+O modelo `Buyer` do booking-service já foi ajustado em `cap-02` para refletir o papel de réplica:
+
+```prisma
+model Buyer {
+  id         String    @id @db.Uuid         // mesmo UUID do auth-service
+  email      String    @unique
+  name       String?                         // opcional — cadastro pode ser minimal
+  lastSyncAt DateTime?                       // quando o último evento Kafka chegou
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  reservations Reservation[]
+
+  @@map("buyers")
+}
+```
+
+**Sem** `passwordHash`, `phone`, `emailVerifiedAt`, `lastLoginAt`. O `id` **não** tem `@default(uuid())` — vem do evento Kafka.
+
+### O consumer
+
+```typescript
+// apps/booking-service/src/modules/buyers/buyers.consumer.ts
+//
+// Mantém a tabela `buyers` local em sincronia com o auth-service. Espelha a
+// mesma ideia do OrganizersConsumer em event-service — ver kafka-topics.ts
+// e apps/auth-service/CLAUDE.md "Responsabilidade única".
+//
+// Princípios (idênticos aos do organizer replication):
+// 1. Só dados NÃO-sensíveis — passwordHash NUNCA chega aqui (OWASP A02).
+// 2. Idempotência via upsert — Kafka re-entrega em caso de crash+restart.
+// 3. Consumer não relança erro: payload inválido → log + skip (evita nack
+//    infinito bloqueando a partição). Em prod: DLQ.
+
+import { Controller, Logger } from '@nestjs/common';
+import { EventPattern, Payload } from '@nestjs/microservices';
+import { PrismaService } from '../../prisma/prisma.service.js';
+import {
+  KAFKA_TOPICS,
+  BuyerReplicatedEventSchema,
+} from '@showpass/types';
+
+@Controller()
+export class BuyersConsumer {
+  private readonly logger = new Logger(BuyersConsumer.name);
+
+  constructor(private readonly prisma: PrismaService) {}
+
+  @EventPattern(KAFKA_TOPICS.AUTH_BUYER_CREATED)
+  async onCreated(@Payload() rawPayload: unknown): Promise<void> {
+    await this.upsertBuyer(rawPayload, 'AUTH_BUYER_CREATED');
+  }
+
+  @EventPattern(KAFKA_TOPICS.AUTH_BUYER_UPDATED)
+  async onUpdated(@Payload() rawPayload: unknown): Promise<void> {
+    await this.upsertBuyer(rawPayload, 'AUTH_BUYER_UPDATED');
+  }
+
+  private async upsertBuyer(rawPayload: unknown, topic: string): Promise<void> {
+    const parsed = BuyerReplicatedEventSchema.safeParse(rawPayload);
+    if (!parsed.success) {
+      this.logger.error(`Payload inválido em ${topic}`, { errors: parsed.error.issues });
+      return;
+    }
+
+    const event = parsed.data;
+
+    await this.prisma.buyer.upsert({
+      where: { id: event.id },
+      create: {
+        id: event.id,
+        email: event.email,
+        name: event.name,
+        lastSyncAt: new Date(),
+      },
+      update: {
+        email: event.email,
+        name: event.name,
+        lastSyncAt: new Date(),
+      },
+    });
+
+    this.logger.log(`Buyer replicado (${topic}): id=${event.id}, email=${event.email}`);
+  }
+}
+```
+
+### O módulo
+
+```typescript
+// apps/booking-service/src/modules/buyers/buyers.module.ts
+//
+// Módulo só-consumer: FK Reservation.buyerId consulta esta tabela diretamente
+// via PrismaService; não há HTTP aqui.
+
+import { Module } from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service.js';
+import { BuyersConsumer } from './buyers.consumer.js';
+
+@Module({
+  controllers: [BuyersConsumer],
+  providers: [PrismaService],
+})
+// eslint-disable-next-line @typescript-eslint/no-extraneous-class -- padrão NestJS
+export class BuyersModule {}
+```
+
+### Migração (se estiver atualizando de um schema anterior)
+
+Se sua base de dados tem a versão antiga do `Buyer` (com `passwordHash`), rode:
+
+```bash
+cd apps/booking-service
+pnpm db:migrate --name buyer_replicated_from_auth
+```
+
+A migration gerada deve dropar `passwordHash`, `phone`, `emailVerifiedAt`, `lastLoginAt` e adicionar `lastSyncAt`.
+
+### Backfill de buyers existentes (ambiente de dev)
+
+Como Kafka não re-emite eventos históricos automaticamente, buyers criados **antes** da pipeline entrar no ar ficam invisíveis para o booking-service. Em dev, o jeito mais rápido é copiar do auth-service via SQL:
+
+```sql
+-- Executar contra showpass_bookings
+INSERT INTO buyers (id, email, name, "lastSyncAt", "createdAt", "updatedAt")
+SELECT id, email, name, NOW(), "createdAt", NOW()
+FROM dblink(
+  'host=postgres user=showpass password=showpass dbname=showpass_auth',
+  'SELECT id, email, name, "createdAt" FROM buyers'
+) AS src(id uuid, email text, name text, "createdAt" timestamptz)
+ON CONFLICT (id) DO NOTHING;
+```
+
+Em produção o caminho correto é um job de re-emissão no `auth-service` (percorre `buyers` e faz `kafka.emit(AUTH_BUYER_UPDATED, ...)` para cada registro) — **nunca** SQL cross-DB.
+
+### Smoke test ponta-a-ponta
+
+```bash
+# 1. Registrar um novo buyer
+curl -s -X POST http://localhost:3002/auth/buyer/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"buyer.replica@test.com","password":"SenhaForte123!","name":"Replica Test"}'
+
+# 2. Esperar ~1s para o Kafka propagar, então conferir no booking DB
+docker exec -it showpass-postgres psql -U showpass -d showpass_bookings \
+  -c "SELECT id, email, \"lastSyncAt\" FROM buyers WHERE email='buyer.replica@test.com';"
+```
+
+A linha deve aparecer com `lastSyncAt` preenchido — prova de que o consumer está vivo.
+
+---
+
 ## Diagrama do fluxo de reserva
 
 ```
@@ -757,73 +1181,126 @@ pnpm --filter @showpass/booking-service run db:migrate
 pnpm --filter @showpass/booking-service run dev       # porta 3004
 ```
 
+### Pré-requisitos — cap-04 (buyers) e cap-05 (evento)
+
+> **IMPORTANTE:** antes de rodar os testes abaixo, você precisa de:
+>
+> **1. Buyers `diego@email.com` e `george@email.com` registrados** — feito na seção de testes
+> do [cap-04](cap-04-auth-service.md). O seed do auth-service cria apenas os planos
+> (free/pro/enterprise); os compradores são registrados manualmente via `POST /auth/buyers/register`.
+> Se pulou aquela seção, registre agora:
+>
+> ```bash
+> curl -s -X POST http://localhost:3006/auth/buyers/register \
+>   -H "Content-Type: application/json" \
+>   -d '{"name":"Diego","email":"diego@email.com","password":"MinhaSenha@123"}' | jq .
+>
+> curl -s -X POST http://localhost:3006/auth/buyers/register \
+>   -H "Content-Type: application/json" \
+>   -d '{"name":"George","email":"george@email.com","password":"Pass@1234"}' | jq .
+> ```
+>
+> **2. Um evento publicado** — execute todos os passos da seção
+> *"Passo a passo — criando um evento end-to-end"* do [cap-05](cap-05-event-service.md).
+> Ao final do cap-05 você terá:
+> - Um evento com `status=on_sale` e `slug` conhecido (salvo em `$EVENT_SLUG`)
+> - Pelo menos um venue com `type=reserved`, seções **Pista** (numbered) e **Cadeira VIP** (reserved)
+> - Dois ticket batches (**Pista** e **Cadeira VIP**) — replicados via Kafka para o booking-service
+>
+> Sem esses pré-requisitos, o login falhará com `401` (buyer inexistente) ou as reservas
+> falharão com `400` (evento inexistente) ou `409` (lote não replicado ainda). Se precisar,
+> rode `docker compose exec postgres psql -U postgres -d showpass_booking -c 'SELECT id, name
+> FROM ticket_batches;'` para confirmar que a replicação Kafka já chegou ao booking-service.
+
 ### Preparação — obter tokens e IDs
 
 ```bash
-# Token de organizer (para criar o evento)
-ORGANIZER_TOKEN=$(curl -s -X POST http://localhost:3006/auth/organizers/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@rockshows.com.br","password":"Senha@Forte123"}' | jq -r .accessToken)
-
 # Token de comprador 1
 BUYER1_TOKEN=$(curl -s -X POST http://localhost:3006/auth/buyers/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"joao@email.com","password":"MinhaSenha@123"}' | jq -r .accessToken)
+  -d '{"email":"diego@email.com","password":"MinhaSenha@123"}' | jq -r .accessToken)
 
 # Token de comprador 2
 BUYER2_TOKEN=$(curl -s -X POST http://localhost:3006/auth/buyers/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"maria@email.com","password":"Pass@1234"}' | jq -r .accessToken)
+  -d '{"email":"george@email.com","password":"Pass@1234"}' | jq -r .accessToken)
 
-# Buscar ID de um assento disponível no evento
-SEAT_ID=$(curl -s "http://localhost:3003/events/rock-in-rio-2025/seats?status=available&limit=2" \
-  | jq -r '.seats[0].id')
+# Reaproveitar $EVENT_SLUG do cap-05. Se abriu um novo terminal, exporte novamente:
+# export EVENT_SLUG="rock-in-rio-2025-<timestamp>"
 
-SEAT_ID2=$(curl -s "http://localhost:3003/events/rock-in-rio-2025/seats?status=available&limit=2" \
-  | jq -r '.seats[1].id')
+# GET /events/:slug/public — rota pública (sem token). Retorna evento completo:
+# { id, status, venue: { sections: [{ seats: [...] }] }, ticketBatches: [...] }
+EVENT_DATA=$(curl -s "http://localhost:3003/events/$EVENT_SLUG/public")
 
-EVENT_ID=$(curl -s http://localhost:3003/events/rock-in-rio-2025 | jq -r .id)
+EVENT_ID=$(echo "$EVENT_DATA" | jq -r '.id')
+
+# IDs dos lotes (precisa para o novo DTO — um reservation item por lote+assento)
+BATCH_PISTA_ID=$(echo "$EVENT_DATA" | jq -r '.ticketBatches[] | select(.name=="Pista") | .id')
+BATCH_VIP_ID=$(echo   "$EVENT_DATA" | jq -r '.ticketBatches[] | select(.name=="Cadeira VIP") | .id')
+
+# Pegar dois assentos da seção "Pista" (reserved com rows/seats). Se seu venue tiver
+# outra ordem de seções, ajuste o índice ou filtre por .name
+SEAT_ID=$(echo  "$EVENT_DATA" | jq -r '[.venue.sections[] | select(.name=="Pista")][0].seats[0].id')
+SEAT_ID2=$(echo "$EVENT_DATA" | jq -r '[.venue.sections[] | select(.name=="Pista")][0].seats[1].id')
+
+# Confirmar que as variáveis estão preenchidas antes de continuar
+echo "EVENT_ID=$EVENT_ID"
+echo "BATCH_PISTA_ID=$BATCH_PISTA_ID  BATCH_VIP_ID=$BATCH_VIP_ID"
+echo "SEAT_ID=$SEAT_ID  SEAT_ID2=$SEAT_ID2"
 ```
+
+> **Por que `items[]` em vez de `seatIds[]`?** Um assento só faz sentido dentro de um
+> lote específico (preço + regras de venda). O DTO final é
+> `items: [{ ticketBatchId, seatId, quantity }]` — o serviço faz snapshot do preço do
+> lote no momento da reserva e valida disponibilidade em `totalQuantity - soldCount - reservedCount`.
 
 ### Passo a passo
 
-**1. Comprador 1 reserva assentos**
+**1. Comprador 1 reserva dois assentos da Pista**
 
 ```bash
-curl -s -X POST http://localhost:3004/reservations \
+curl -s -X POST http://localhost:3004/bookings/reservations \
   -H "Authorization: Bearer $BUYER1_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{
     \"eventId\": \"$EVENT_ID\",
-    \"seatIds\": [\"$SEAT_ID\", \"$SEAT_ID2\"]
+    \"items\": [
+      { \"ticketBatchId\": \"$BATCH_PISTA_ID\", \"seatId\": \"$SEAT_ID\",  \"quantity\": 1 },
+      { \"ticketBatchId\": \"$BATCH_PISTA_ID\", \"seatId\": \"$SEAT_ID2\", \"quantity\": 1 }
+    ]
   }" | jq .
 ```
 
-Resposta esperada:
+Resposta esperada (`201 Created`):
 
 ```json
 {
-  "reservationId": "018eaaaa-...",
+  "id": "018eaaaa-...",
+  "buyerId": "...",
+  "eventId": "...",
+  "organizerId": "...",
   "status": "pending",
-  "seats": [
-    { "id": "...", "row": "A", "number": 1 },
-    { "id": "...", "row": "A", "number": 2 }
-  ],
-  "expiresAt": "2025-01-01T00:15:00.000Z"
+  "expiresAt": "2025-01-01T00:07:00.000Z",
+  "items": [
+    { "ticketBatchId": "...", "seatId": "<SEAT_ID>",  "unitPrice": "200.00", "quantity": 1 },
+    { "ticketBatchId": "...", "seatId": "<SEAT_ID2>", "unitPrice": "200.00", "quantity": 1 }
+  ]
 }
 ```
 
-Os assentos ficam **bloqueados por 15 minutos** no Redis.
+Os assentos ficam **bloqueados por 7 minutos** no Redis (`SEAT_LOCK_TTL_SECONDS=420`).
 
-**2. Comprador 2 tenta reservar os mesmos assentos (double booking)**
+**2. Comprador 2 tenta reservar o mesmo assento (double booking)**
 
 ```bash
-curl -s -X POST http://localhost:3004/reservations \
+curl -s -X POST http://localhost:3004/bookings/reservations \
   -H "Authorization: Bearer $BUYER2_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{
     \"eventId\": \"$EVENT_ID\",
-    \"seatIds\": [\"$SEAT_ID\"]
+    \"items\": [
+      { \"ticketBatchId\": \"$BATCH_PISTA_ID\", \"seatId\": \"$SEAT_ID\", \"quantity\": 1 }
+    ]
   }" | jq .
 ```
 
@@ -832,8 +1309,8 @@ Resposta esperada: **`409 Conflict`**
 ```json
 {
   "statusCode": 409,
-  "message": "Assentos indisponíveis",
-  "unavailableSeats": ["018ebbbb-..."]
+  "message": "Um ou mais assentos não estão disponíveis",
+  "unavailableSeatIds": ["<SEAT_ID>"]
 }
 ```
 
@@ -860,10 +1337,15 @@ docker compose exec redis redis-cli expire "seat:lock:<event-id>:<seat-id>" 5
 sleep 6
 
 # Agora o comprador 2 consegue reservar
-curl -s -X POST http://localhost:3004/reservations \
+curl -s -X POST http://localhost:3004/bookings/reservations \
   -H "Authorization: Bearer $BUYER2_TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"eventId\":\"$EVENT_ID\",\"seatIds\":[\"$SEAT_ID\"]}" | jq .status
+  -d "{
+    \"eventId\": \"$EVENT_ID\",
+    \"items\": [
+      { \"ticketBatchId\": \"$BATCH_PISTA_ID\", \"seatId\": \"$SEAT_ID\", \"quantity\": 1 }
+    ]
+  }" | jq .status
 ```
 
 Resposta esperada: `"pending"` — o assento estava livre após o TTL expirar.
@@ -871,7 +1353,7 @@ Resposta esperada: `"pending"` — o assento estava livre após o TTL expirar.
 **5. Listar reservas do comprador**
 
 ```bash
-curl -s http://localhost:3004/reservations \
+curl -s http://localhost:3004/bookings/reservations \
   -H "Authorization: Bearer $BUYER1_TOKEN" | jq .
 ```
 
@@ -879,7 +1361,7 @@ curl -s http://localhost:3004/reservations \
 
 ```bash
 RESERVATION_ID="018eaaaa-..."  # id da reserva criada no passo 1
-curl -s -X DELETE http://localhost:3004/reservations/$RESERVATION_ID \
+curl -s -X DELETE http://localhost:3004/bookings/reservations/$RESERVATION_ID \
   -H "Authorization: Bearer $BUYER1_TOKEN" | jq .
 ```
 
