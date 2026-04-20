@@ -526,7 +526,11 @@ pnpm --filter @showpass/web run dev                   # porta 3001
 
 **1. Acessar a página do evento**
 
-Acesse: **http://localhost:3001/events/rock-in-rio-2025**
+Acesse: **http://localhost:3001/events/$EVENT_SLUG**
+
+> O `$EVENT_SLUG` foi gerado no cap-05 (slug do evento criado via `POST /events`).
+> Como o service concatena um timestamp ao slug, não é exatamente `rock-in-rio-2025`;
+> use o valor retornado pela API ou ajuste via Prisma Studio se quiser um slug fixo.
 
 Você deve ver:
 - Título, descrição e datas do evento

@@ -405,7 +405,7 @@ export class PaymentConfirmedConsumer {
     });
 
     if (existingTickets > 0) {
-      this.logger.info('Ingressos já gerados (idempotente)', { orderId: event.orderId });
+      this.logger.log('Ingressos já gerados (idempotente)', { orderId: event.orderId });
       return;
     }
 
@@ -740,7 +740,7 @@ No terminal do worker-service, você verá:
 [KafkaConsumer] Mensagem recebida: payment.confirmed — orderId: 018ecccc-...
 [TicketService] Gerando 2 ingressos para reserva 018eaaaa-...
 [PdfGenerator] PDF gerado — /tmp/ticket-018ecccc-001.pdf (124KB)
-[EmailService] Email enviado para joao@email.com
+[EmailService] Email enviado para diego@email.com
 [KafkaConsumer] Mensagem processada com sucesso
 ```
 
@@ -776,7 +776,7 @@ Resposta esperada:
     "seatRow": "A",
     "seatNumber": 1,
     "eventTitle": "Rock in Rio 2025",
-    "buyerName": "João Silva"
+    "buyerName": "Diego"
   }
 }
 ```

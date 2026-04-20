@@ -347,8 +347,8 @@ Cole o `traceId` do header `x-request-id` da resposta e pressione Enter.
 Você verá o trace completo:
 
 ```
-POST /reservations (API Gateway) — 45ms
-  └─ POST /reservations (Booking Service) — 38ms
+POST /bookings/reservations (API Gateway) — 45ms
+  └─ POST /bookings/reservations (Booking Service) — 38ms
        ├─ Redis SETNX seat:lock:... — 2ms
        ├─ Redis SETNX seat:lock:... — 1ms
        └─ Prisma INSERT reservations — 12ms
@@ -379,12 +379,16 @@ histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{service="book
 O alerta `BookingConflictRateHigh` dispara quando `> 10 conflitos/min`. Simulate:
 
 ```bash
-# Disparar 15 tentativas de double booking em 1 minuto
+# Disparar 15 tentativas de double booking em 1 minuto.
+# Usar o DTO atual: items[] com ticketBatchId + seatId (ver cap-06).
 for i in {1..15}; do
-  curl -s -X POST http://localhost:3004/reservations \
+  curl -s -X POST http://localhost:3004/bookings/reservations \
     -H "Authorization: Bearer $BUYER2_TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{\"eventId\":\"$EVENT_ID\",\"seatIds\":[\"$SEAT_ID\"]}" > /dev/null
+    -d "{
+      \"eventId\":\"$EVENT_ID\",
+      \"items\":[{\"ticketBatchId\":\"$BATCH_PISTA_ID\",\"seatId\":\"$SEAT_ID\",\"quantity\":1}]
+    }" > /dev/null
 done
 ```
 

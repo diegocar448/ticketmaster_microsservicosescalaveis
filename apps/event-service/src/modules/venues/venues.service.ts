@@ -9,6 +9,15 @@ import { PrismaService } from '../../prisma/prisma.service.js';
 import type { Venue, Prisma } from '../../prisma/generated/index.js';
 import type { CreateVenueDto } from '@showpass/types';
 
+// Venue + seções/assentos para retorno do GET :id
+export type VenueWithSections = Prisma.VenueGetPayload<{
+  include: {
+    sections: {
+      include: { seats: true };
+    };
+  };
+}>;
+
 interface CreateSectionInput {
   name: string;
   seatingType: 'reserved' | 'general_admission';
@@ -141,5 +150,35 @@ export class VenuesService {
       const chunk = seats.slice(i, i + chunkSize);
       await tx.seat.createMany({ data: chunk });
     }
+  }
+
+  // ─── Leitura ───────────────────────────────────────────────────────────────
+
+  async listByOrganizer(organizerId: string): Promise<Venue[]> {
+    return this.prisma.venue.findMany({
+      where: { organizerId },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async getById(
+    id: string,
+    organizerId: string,
+  ): Promise<VenueWithSections> {
+    const venue = await this.prisma.venue.findFirst({
+      where: { id, organizerId },
+      include: {
+        sections: {
+          include: {
+            seats: {
+              orderBy: [{ row: 'asc' }, { number: 'asc' }],
+            },
+          },
+        },
+      },
+    });
+
+    if (!venue) throw new NotFoundException('Venue não encontrado');
+    return venue;
   }
 }

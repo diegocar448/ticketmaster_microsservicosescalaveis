@@ -8,15 +8,18 @@ datasource db {
   // Prisma 7: url foi movida para prisma.config.ts (defineConfig)
 }
 
+// Buyer é REPLICADO do auth-service via Kafka (auth.buyer-*).
+// Este serviço NÃO é a fonte da verdade sobre compradores — existe aqui só
+// para servir de FK em Reservation.buyerId. Dados sensíveis (passwordHash,
+// emailVerifiedAt) NUNCA chegam aqui. Ver BuyersConsumer e
+// packages/types/kafka-topics.ts:BuyerReplicatedEventSchema.
 model Buyer {
-  id           String  @id @default(uuid()) @db.Uuid
-  name         String
-  email        String  @unique
-  passwordHash String
-  phone        String?
+  id    String  @id @db.Uuid  // id vem do auth-service — sem @default
+  name  String?
+  email String  @unique
 
-  emailVerifiedAt DateTime?
-  lastLoginAt     DateTime?
+  // Timestamp da última replicação — útil para debug/observability
+  lastSyncAt DateTime?
 
   reservations Reservation[]
 
@@ -63,4 +66,48 @@ model ReservationItem {
   quantity  Int     @default(1)
 
   @@map("reservation_items")
+}
+
+// ─── Réplica do TicketBatch (sincronizada via Kafka) ──────────────────────────
+//
+// Por que replicar aqui em vez de chamar o event-service a cada reserva?
+// 1. Performance: acquireLock + incrementReservedCount no path quente não pode
+//    esperar 50ms de HTTP entre serviços.
+// 2. Resiliência: se o event-service cai, booking continua aceitando reservas.
+// 3. Consistência local: `reservedCount` é atualizado junto da reserva na mesma
+//    transação Postgres — sem dual-writes entre bancos diferentes.
+//
+// O preço, totalQuantity e saleStartAt/EndAt são eventualmente consistentes:
+// vêm via `events.ticket-batch-*` tópicos Kafka. O delay típico é <1s.
+//
+// `reservedCount` e `soldCount` são OWNED pelo booking-service (source of truth
+// local): não sobrescrever via replicação — só o próprio booking-service muda.
+// Por isso o consumer só faz UPSERT dos campos "configuráveis pelo organizer".
+model TicketBatch {
+  // ID vem do event-service (mesmo UUID) — permite join lógico via ticketBatchId
+  // armazenado em ReservationItem
+  id      String @id @db.Uuid
+  eventId String @db.Uuid
+
+  // sectionId é opaco aqui (não há FK cross-service); usado só para display
+  sectionId String? @db.Uuid
+
+  name          String
+  price         Decimal @db.Decimal(10, 2)
+  totalQuantity Int
+
+  // Contadores owned pelo booking-service (NÃO sobrescrever via consumer Kafka)
+  soldCount     Int @default(0)
+  reservedCount Int @default(0)
+
+  saleStartAt DateTime
+  saleEndAt   DateTime
+
+  isVisible Boolean @default(true)
+
+  // Timestamp do último evento aplicado — detectar mensagens fora de ordem
+  lastSyncAt DateTime @default(now())
+
+  @@index([eventId])
+  @@map("ticket_batches")
 }

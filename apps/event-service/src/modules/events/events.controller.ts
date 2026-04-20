@@ -46,6 +46,19 @@ export class EventsController {
     return this.eventsService.getBySlug(slug);
   }
 
+  /**
+   * Metadata mínima por ID — usada internamente pelo booking-service para
+   * validar status do evento antes de reservar (buyer não tem headers de organizer).
+   * Retorna apenas { id, status, organizerId } para não vazar dados sensíveis.
+   */
+  @Get(':id/public-meta')
+  async getPublicMetaById(
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<{ id: string; status: string; organizerId: string }> {
+    const event = await this.eventsService.getById(id);
+    return { id: event.id, status: event.status, organizerId: event.organizerId };
+  }
+
   // ─── Rotas de organizer ────────────────────────────────────────────────────
 
   @Post()

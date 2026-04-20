@@ -14,6 +14,9 @@ import {
   Logger,
 } from '@nestjs/common';
 import bcrypt from 'bcrypt';
+import { KafkaProducerService } from '@showpass/kafka';
+import { KAFKA_TOPICS } from '@showpass/types';
+import type { BuyerReplicatedEvent } from '@showpass/types';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { TokenService } from './token.service.js';
 import type { TokenPair } from './token.service.js';
@@ -34,6 +37,7 @@ export class BuyerAuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokenService: TokenService,
+    private readonly kafka: KafkaProducerService,
   ) {}
 
   async register(dto: RegisterBuyerDto): Promise<TokenPair> {
@@ -57,6 +61,20 @@ export class BuyerAuthService {
     });
 
     this.logger.log(`Novo buyer registrado: buyerId=${buyer.id}`);
+
+    // Replicação assíncrona para booking-service — só campos não-sensíveis.
+    // Ver packages/types/kafka-topics.ts:BuyerReplicatedEventSchema.
+    // Emit fora da transação: se Kafka falhar, registro ainda é válido.
+    const event: BuyerReplicatedEvent = {
+      id: buyer.id,
+      email: buyer.email,
+      name: buyer.name,
+    };
+    try {
+      await this.kafka.emit(KAFKA_TOPICS.AUTH_BUYER_CREATED, event, buyer.id);
+    } catch (err) {
+      this.logger.error(`Falha ao publicar AUTH_BUYER_CREATED: buyerId=${buyer.id}`, err);
+    }
 
     return this.tokenService.issueTokenPair(
       {

@@ -266,15 +266,24 @@ services:
       # KRaft mode — sem ZooKeeper
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      # Dois listeners:
+      # - PLAINTEXT (kafka:9092): comunicação entre containers na rede `data`
+      # - PLAINTEXT_HOST (localhost:29092): acesso a partir do host
+      #   (necessário para serviços rodando via scripts/dev.sh fora de container)
+      # Sem o listener HOST, clients no host recebem o advertised `kafka:9092`
+      # e falham porque não resolvem esse hostname.
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_RETENTION_MS: 604800000  # 7 dias
     ports:
-      - "9092:9092"
+      - "9092:9092"    # listener interno (containers)
+      - "29092:29092"  # listener externo (host)
     networks:
       - data
     healthcheck:
@@ -329,7 +338,7 @@ services:
     restart: unless-stopped
     env_file: apps/api-gateway/.env
     ports:
-      - "3001:3001"
+      - "3000:3000"
     volumes:
       - ./apps/api-gateway/src:/app/src   # hot reload em dev
     networks:
@@ -341,6 +350,24 @@ services:
       redis:
         condition: service_healthy
 
+  auth-service:
+    build:
+      context: .
+      dockerfile: apps/auth-service/Dockerfile
+      target: dev
+    restart: unless-stopped
+    env_file: apps/auth-service/.env
+    ports:
+      - "3006:3006"
+    volumes:
+      - ./apps/auth-service/src:/app/src
+    networks:
+      - private
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   event-service:
     build:
       context: .
@@ -349,7 +376,7 @@ services:
     restart: unless-stopped
     env_file: apps/event-service/.env
     ports:
-      - "3002:3002"
+      - "3003:3003"
     volumes:
       - ./apps/event-service/src:/app/src
     networks:
@@ -367,7 +394,7 @@ services:
     restart: unless-stopped
     env_file: apps/booking-service/.env
     ports:
-      - "3003:3003"
+      - "3004:3004"
     volumes:
       - ./apps/booking-service/src:/app/src
     networks:
@@ -389,7 +416,7 @@ services:
     restart: unless-stopped
     env_file: apps/payment-service/.env
     ports:
-      - "3004:3004"
+      - "3002:3002"
     volumes:
       - ./apps/payment-service/src:/app/src
     networks:
@@ -561,7 +588,7 @@ Cada serviço tem um `.env.example` com os nomes e valores padrão de desenvolvi
 
 # ── Servidor ────────────────────────────────────────────────────────────────
 NODE_ENV=development
-PORT=3002
+PORT=3003
 SERVICE_NAME=event-service
 
 # ── Banco de dados (database próprio do serviço) ─────────────────────────────
@@ -571,7 +598,7 @@ DATABASE_URL="postgresql://event_svc:event_svc_dev@localhost:5432/showpass_event
 JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
 
 # ── Kafka ────────────────────────────────────────────────────────────────────
-KAFKA_BROKERS="localhost:9092"
+KAFKA_BROKERS="localhost:29092"
 KAFKA_CLIENT_ID="event-service"
 KAFKA_GROUP_ID="event-service-group"
 

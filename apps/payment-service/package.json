@@ -13,6 +13,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:prod": "prisma migrate deploy",
+    "db:seed": "node --loader @swc-node/register/esm prisma/seed.ts",
     "db:studio": "prisma studio"
   },
   "dependencies": {
@@ -24,14 +25,18 @@
     "@prisma/client": "^7.0.0",
     "@showpass/kafka": "workspace:*",
     "@showpass/types": "workspace:*",
+    "body-parser": "^2.0.0",
     "pg": "^8.20.0",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.0",
-    "stripe": "^16.0.0",
+    "stripe": "^22.0.2",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@nestjs/testing": "^11.0.0",
+    "@swc-node/register": "^1.10.0",
+    "@types/body-parser": "^1.19.5",
+    "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.20.0",
     "dotenv": "^17.4.2",

@@ -66,16 +66,22 @@ services:
       # KRaft mode — sem ZooKeeper
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      # Dois listeners:
+      # - PLAINTEXT (kafka:9092): comunicação interna entre containers na network `data`
+      # - PLAINTEXT_HOST (localhost:29092): acesso a partir do host (serviços rodando via scripts/dev.sh)
+      # Sem o listener HOST, clients no host recebem o advertised `kafka:9092` e falham ao resolver DNS.
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_RETENTION_MS: 604800000 # 7 dias
     ports:
       - "9092:9092"
+      - "29092:29092"
     networks:
       - data
     healthcheck:
@@ -85,9 +91,9 @@ services:
           "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list",
         ]
       interval: 10s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 120s
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -140,7 +146,7 @@ services:
     restart: unless-stopped
     env_file: apps/api-gateway/.env
     ports:
-      - "3001:3001"
+      - "3000:3000"
     volumes:
       - ./apps/api-gateway/src:/app/apps/api-gateway/src # hot reload em dev
     networks:
@@ -158,7 +164,7 @@ services:
     restart: unless-stopped
     env_file: apps/auth-service/.env
     ports:
-      - "3002:3002"
+      - "3006:3006"
     volumes:
       - ./apps/auth-service/src:/app/apps/auth-service/src
     networks:
@@ -216,7 +222,7 @@ services:
     restart: unless-stopped
     env_file: apps/payment-service/.env
     ports:
-      - "3005:3005"
+      - "3002:3002"
     volumes:
       - ./apps/payment-service/src:/app/apps/payment-service/src
     networks:
@@ -236,7 +242,7 @@ services:
     restart: unless-stopped
     env_file: apps/search-service/.env
     ports:
-      - "3006:3006"
+      - "3005:3005"
     volumes:
       - ./apps/search-service/src:/app/apps/search-service/src
     networks:

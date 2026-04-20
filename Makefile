@@ -5,7 +5,7 @@
 
 .PHONY: dev build test lint type-check \
         infra-up infra-down infra-logs \
-        db-migrate db-seed db-studio \
+        db-generate db-migrate db-seed db-studio \
         copy-env gen-keys \
         github-setup clean help
 
@@ -43,8 +43,17 @@ infra-logs:
 
 # ─── Banco de dados ───────────────────────────────────────────────────────────
 
-# Roda migrations em todos os serviços (ordem importa: auth antes de booking)
-db-migrate:
+# Gera os Prisma Clients (tipagem). Necessário ANTES de type-check/build em máquinas
+# novas — o booking-service usa custom output path (src/prisma/generated).
+db-generate:
+	pnpm --filter @showpass/auth-service    run db:generate
+	pnpm --filter @showpass/event-service   run db:generate
+	pnpm --filter @showpass/booking-service run db:generate
+	pnpm --filter @showpass/payment-service run db:generate
+
+# Roda migrations em todos os serviços já implementados.
+# A ordem importa: auth antes dos demais (não há FK cross-DB, mas ajuda no debug).
+db-migrate: db-generate
 	pnpm --filter @showpass/auth-service    run db:migrate
 	pnpm --filter @showpass/event-service   run db:migrate
 	pnpm --filter @showpass/booking-service run db:migrate
@@ -52,8 +61,9 @@ db-migrate:
 
 # Seed inicial (planos, categorias, usuário admin)
 db-seed:
-	pnpm --filter @showpass/auth-service  run db:seed
-	pnpm --filter @showpass/event-service run db:seed
+	pnpm --filter @showpass/auth-service    run db:seed
+	pnpm --filter @showpass/event-service   run db:seed
+	pnpm --filter @showpass/payment-service run db:seed
 
 # Abre o Prisma Studio para um serviço específico
 # Uso: make db-studio SERVICE=event-service
@@ -132,8 +142,8 @@ setup: copy-env infra-up
 	$(MAKE) db-seed
 	@echo "✅ Setup completo!"
 	@echo "   Frontend:    http://localhost:3000"
-	@echo "   API Gateway: http://localhost:3001"
-	@echo "   Swagger UI:  http://localhost:3001/docs"
+	@echo "   API Gateway: http://localhost:3000"
+	@echo "   Swagger UI:  http://localhost:3000/docs"
 	@echo "   Kafka UI:    http://localhost:8080"
 	@echo ""
 	@echo "⚠️  Se é a primeira vez: rode 'make gen-keys' para gerar as chaves RSA"
@@ -155,7 +165,8 @@ help:
 	@echo "  make infra-logs   Tail de logs da infra"
 	@echo ""
 	@echo "Banco de dados:"
-	@echo "  make db-migrate   Roda migrations em todos os serviços"
+	@echo "  make db-generate  Gera os Prisma Clients (antes de type-check/build)"
+	@echo "  make db-migrate   Roda migrations + garante db-generate"
 	@echo "  make db-seed      Popula dados iniciais"
 	@echo "  make db-studio    Abre Prisma Studio (SERVICE=event-service)"
 	@echo ""

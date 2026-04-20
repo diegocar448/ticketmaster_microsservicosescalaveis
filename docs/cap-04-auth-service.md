@@ -470,6 +470,19 @@ export class TokenService {
 
 ## Passo 4.5 — Auth Service (Organizers)
 
+> **Replicação cross-service via Kafka**
+>
+> Depois de criar o organizer, `register()` emite `AUTH_ORGANIZER_CREATED` no
+> Kafka. O event-service consome (`OrganizersConsumer`, cap-05) e faz upsert
+> local com **só os campos não-sensíveis** (`id`, `name`, `slug`, `planSlug`).
+> `passwordHash`, `role` e `emailVerifiedAt` **nunca** trafegam — auth-service
+> é a única fonte da verdade sobre autenticação (OWASP A02).
+>
+> Por que replicar em vez de consultar o auth-service a cada request?
+> Porque Event/Venue têm FK para Organizer. Sem tabela local, teríamos chamada
+> de rede (+latência, +acoplamento) em cada insert. Com replicação, o
+> event-service aplica `maxVenues` e `maxActiveEvents` sem sair do próprio DB.
+
 ```typescript
 // apps/auth-service/src/modules/auth/organizer-auth.service.ts
 
@@ -480,6 +493,9 @@ import {
   Logger,
 } from '@nestjs/common';
 import bcrypt from 'bcrypt';  // default import com esModuleInterop: true
+import { KafkaProducerService } from '@showpass/kafka';
+import { KAFKA_TOPICS } from '@showpass/types';
+import type { OrganizerReplicatedEvent } from '@showpass/types';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { TokenService } from './token.service.js';
 import type { TokenPair } from './token.service.js';
@@ -500,6 +516,7 @@ export class OrganizerAuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokenService: TokenService,
+    private readonly kafka: KafkaProducerService,
   ) {}
 
   async register(dto: RegisterOrganizerDto): Promise<TokenPair> {
@@ -517,8 +534,8 @@ export class OrganizerAuthService {
       where: { slug: 'free' },
     });
 
-    const user = await this.prisma.$transaction(async (tx) => {
-      const organizer = await tx.organizer.create({
+    const { organizer, user } = await this.prisma.$transaction(async (tx) => {
+      const newOrganizer = await tx.organizer.create({
         data: {
           name: dto.organizationName,
           slug: this.slugify(dto.organizationName),
@@ -527,18 +544,39 @@ export class OrganizerAuthService {
         },
       });
 
-      return tx.organizerUser.create({
+      const newUser = await tx.organizerUser.create({
         data: {
-          organizerId: organizer.id,
+          organizerId: newOrganizer.id,
           name: dto.name,
           email: dto.email,
           passwordHash,
           role: 'owner',
         },
       });
+
+      return { organizer: newOrganizer, user: newUser };
     });
 
     this.logger.log(`Novo organizer registrado: userId=${user.id}`);
+
+    // Replicação assíncrona para event-service — só campos não-sensíveis.
+    // Emit FORA da transação: se Kafka estiver down, o registro ainda vale
+    // (eventual consistency). Em prod real: outbox pattern resolveria o gap
+    // "commit ok, emit falhou" — para o tutorial, aceito o risco.
+    const event: OrganizerReplicatedEvent = {
+      id: organizer.id,
+      name: organizer.name,
+      slug: organizer.slug,
+      planSlug: freePlan.slug,  // slug, não id — UUIDs de Plan diferem entre DBs
+    };
+    try {
+      await this.kafka.emit(KAFKA_TOPICS.AUTH_ORGANIZER_CREATED, event, organizer.id);
+    } catch (err) {
+      this.logger.error(
+        `Falha ao publicar AUTH_ORGANIZER_CREATED: organizerId=${organizer.id}`,
+        err,
+      );
+    }
 
     return this.tokenService.issueTokenPair(
       { userId: user.id, email: user.email, type: 'organizer', organizerId: user.organizerId },
@@ -586,11 +624,18 @@ export class OrganizerAuthService {
 
 ### BuyerAuthService
 
+Assim como o organizer, o buyer é **replicado** para o booking-service via
+`AUTH_BUYER_CREATED` — Reservation.buyerId precisa de FK local (ver cap-06).
+Só `id`, `email` e `name` trafegam; `passwordHash` fica exclusivamente aqui.
+
 ```typescript
 // apps/auth-service/src/modules/auth/buyer-auth.service.ts
 
 import { Injectable, UnauthorizedException, ConflictException, Logger } from '@nestjs/common';
 import bcrypt from 'bcrypt';
+import { KafkaProducerService } from '@showpass/kafka';
+import { KAFKA_TOPICS } from '@showpass/types';
+import type { BuyerReplicatedEvent } from '@showpass/types';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { TokenService } from './token.service.js';
 import type { TokenPair } from './token.service.js';
@@ -610,6 +655,7 @@ export class BuyerAuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokenService: TokenService,
+    private readonly kafka: KafkaProducerService,
   ) {}
 
   async register(dto: RegisterBuyerDto): Promise<TokenPair> {
@@ -620,6 +666,18 @@ export class BuyerAuthService {
     const buyer = await this.prisma.buyer.create({
       data: { email: dto.email, name: dto.name ?? null, passwordHash },
     });
+
+    // Replicação para booking-service (só campos não-sensíveis).
+    const event: BuyerReplicatedEvent = {
+      id: buyer.id,
+      email: buyer.email,
+      name: buyer.name,
+    };
+    try {
+      await this.kafka.emit(KAFKA_TOPICS.AUTH_BUYER_CREATED, event, buyer.id);
+    } catch (err) {
+      this.logger.error(`Falha ao publicar AUTH_BUYER_CREATED: buyerId=${buyer.id}`, err);
+    }
 
     return this.tokenService.issueTokenPair({ userId: buyer.id, email: buyer.email, type: 'buyer' }, {});
   }
@@ -965,6 +1023,7 @@ export class AuthModule {}
 
 import { Module } from '@nestjs/common';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { KafkaModule } from '@showpass/kafka';
 import { AuthModule } from './modules/auth/auth.module.js';
 
 @Module({
@@ -973,12 +1032,24 @@ import { AuthModule } from './modules/auth/auth.module.js';
       { name: 'default', ttl: 60_000, limit: 100 },
       { name: 'auth',    ttl: 60_000, limit: 5 },
     ]),
+
+    // Kafka — auth publica eventos de organizer/buyer para replicação.
+    // Global: OrganizerAuthService/BuyerAuthService injetam KafkaProducerService.
+    KafkaModule.forRoot({
+      clientId: process.env['KAFKA_CLIENT_ID'] ?? 'auth-service',
+      brokers: (process.env['KAFKA_BROKERS'] ?? 'localhost:29092').split(','),
+      groupId: process.env['KAFKA_GROUP_ID'] ?? 'auth-service-group',
+    }),
+
     AuthModule,
   ],
 })
 // eslint-disable-next-line @typescript-eslint/no-extraneous-class -- padrão NestJS
 export class AppModule {}
 ```
+
+> Adicione `KAFKA_CLIENT_ID=auth-service`, `KAFKA_BROKERS=localhost:29092`
+> e `KAFKA_GROUP_ID=auth-service-group` ao `apps/auth-service/.env`.
 
 ```typescript
 // apps/auth-service/src/main.ts
@@ -1005,7 +1076,9 @@ Adicionar ao `apps/auth-service/package.json`:
 
 ```json
 "dependencies": {
+  "@nestjs/microservices": "^11.0.0",
   "@nestjs/passport": "^11.0.0",
+  "@showpass/kafka": "workspace:*",
   "cookie-parser": "^1.4.6",
   "passport": "^0.7.0",
   "passport-jwt": "^4.0.0"
@@ -1164,8 +1237,8 @@ Resposta esperada: novo `accessToken` com 15 minutos de validade.
 curl -s -X POST http://localhost:3006/auth/buyers/register \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "João Silva",
-    "email": "joao@email.com",
+    "name": "Diego",
+    "email": "diego@email.com",
     "password": "MinhaSenha@123"
   }' | jq .
 ```
@@ -1175,7 +1248,7 @@ curl -s -X POST http://localhost:3006/auth/buyers/register \
 ```bash
 BUYER_TOKEN=$(curl -s -X POST http://localhost:3006/auth/buyers/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"joao@email.com","password":"MinhaSenha@123"}' | jq -r .accessToken)
+  -d '{"email":"diego@email.com","password":"MinhaSenha@123"}' | jq -r .accessToken)
 
 echo "Buyer token: $BUYER_TOKEN"
 ```
@@ -1197,7 +1270,7 @@ Se o API Gateway estiver rodando:
 # Registrar pelo gateway (porta 3000 → proxy para 3006)
 curl -s -X POST http://localhost:3000/auth/buyers/register \
   -H "Content-Type: application/json" \
-  -d '{"name":"Maria","email":"maria@email.com","password":"Pass@1234"}' | jq .
+  -d '{"name":"George","email":"george@email.com","password":"Pass@1234"}' | jq .
 ```
 
 ### Inspecionando o JWT

@@ -250,17 +250,17 @@ stripe listen --forward-to http://localhost:3002/webhooks/stripe
 
 Acesse: **http://localhost:3001/login**
 
-Use: `joao@email.com` / `MinhaSenha@123`
+Use: `diego@email.com` / `MinhaSenha@123`
 
 **2. Selecionar assentos e iniciar checkout**
 
-Acesse: **http://localhost:3001/events/rock-in-rio-2025**
+Acesse: **http://localhost:3001/events/$EVENT_SLUG** (use o slug gerado no cap-05 — inclui timestamp).
 
 Selecione 2 assentos e clique em "Reservar". Você deve ser redirecionado para a página de checkout em `/checkout/[reservationId]`.
 
 **3. Verificar o timer regressivo**
 
-Na página de checkout, observe o timer de 15 minutos no canto superior. Ele exibe o tempo restante para completar o pagamento.
+Na página de checkout, observe o timer de 7 minutos no canto superior (`SEAT_LOCK_TTL_SECONDS=420`). Ele exibe o tempo restante para completar o pagamento — deve bater com o TTL do lock Redis (cap-06).
 
 **4. Clicar em "Pagar com Stripe"**
 

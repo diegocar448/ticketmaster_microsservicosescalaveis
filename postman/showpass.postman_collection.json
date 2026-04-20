@@ -1,0 +1,564 @@
+{
+  "info": {
+    "name": "ShowPass — Tutorial (até cap-06)",
+    "description": "Coleção com todos os endpoints implementados até o cap-06 do tutorial ShowPass.\n\n## Como usar\n\n1. Importe este arquivo no Postman (File → Import).\n2. As variáveis `gateway_url`, `auth_url`, `event_url`, `booking_url` já estão configuradas em `Variables`.\n3. Rode primeiro **Auth → Login Organizer** ou **Auth → Login Buyer** — o token é salvo automaticamente em `organizer_token` / `buyer_token` via test script.\n4. Os endpoints autenticados usam `{{organizer_token}}` ou `{{buyer_token}}` no header `Authorization`.\n\n## Portas\n\n- Gateway: 3000 (entrada principal, proxy + JWT)\n- Auth-service: 3006\n- Event-service: 3003\n- Booking-service: 3004\n\nPor padrão os requests vão pelo **gateway** (`{{gateway_url}}`). Para debug, troque para a porta direta do serviço.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "gateway_url", "value": "http://localhost:3000", "type": "string" },
+    { "key": "auth_url", "value": "http://localhost:3006", "type": "string" },
+    { "key": "event_url", "value": "http://localhost:3003", "type": "string" },
+    { "key": "booking_url", "value": "http://localhost:3004", "type": "string" },
+    { "key": "organizer_token", "value": "", "type": "string" },
+    { "key": "buyer_token", "value": "", "type": "string" },
+    { "key": "organizer_id", "value": "", "type": "string" },
+    { "key": "event_id", "value": "", "type": "string" },
+    { "key": "event_slug", "value": "", "type": "string" },
+    { "key": "venue_id", "value": "", "type": "string" },
+    { "key": "category_id", "value": "", "type": "string" },
+    { "key": "ticket_batch_id", "value": "", "type": "string" },
+    { "key": "seat_id", "value": "", "type": "string" },
+    { "key": "reservation_id", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /health/live (gateway)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway_url}}/health/live", "host": ["{{gateway_url}}"], "path": ["health", "live"] }
+          }
+        },
+        {
+          "name": "GET /health/ready (gateway)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway_url}}/health/ready", "host": ["{{gateway_url}}"], "path": ["health", "ready"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "POST /auth/organizers/register",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.accessToken) pm.collectionVariables.set('organizer_token', json.accessToken);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Rock Produções\",\n  \"email\": \"organizer@example.com\",\n  \"password\": \"Senha@1234\",\n  \"organizationName\": \"Rock Produções Ltda\"\n}"
+            },
+            "url": { "raw": "{{gateway_url}}/auth/organizers/register", "host": ["{{gateway_url}}"], "path": ["auth", "organizers", "register"] }
+          }
+        },
+        {
+          "name": "POST /auth/organizers/login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.accessToken) {",
+                  "    pm.collectionVariables.set('organizer_token', json.accessToken);",
+                  "    console.log('Organizer token salvo');",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"organizer@example.com\",\n  \"password\": \"Senha@1234\"\n}"
+            },
+            "url": { "raw": "{{gateway_url}}/auth/organizers/login", "host": ["{{gateway_url}}"], "path": ["auth", "organizers", "login"] }
+          }
+        },
+        {
+          "name": "GET /auth/organizers/me",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{organizer_token}}" }],
+            "url": { "raw": "{{gateway_url}}/auth/organizers/me", "host": ["{{gateway_url}}"], "path": ["auth", "organizers", "me"] }
+          }
+        },
+        {
+          "name": "POST /auth/organizers/refresh",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "Requer cookie httpOnly `refresh_token` — definido automaticamente no login/register.",
+            "url": { "raw": "{{gateway_url}}/auth/organizers/refresh", "host": ["{{gateway_url}}"], "path": ["auth", "organizers", "refresh"] }
+          }
+        },
+        {
+          "name": "POST /auth/refresh (genérico)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "Rota genérica — usa o cookie `refresh_token` sem distinguir organizer/buyer.",
+            "url": { "raw": "{{gateway_url}}/auth/refresh", "host": ["{{gateway_url}}"], "path": ["auth", "refresh"] }
+          }
+        },
+        {
+          "name": "POST /auth/logout",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{organizer_token}}" }],
+            "url": { "raw": "{{gateway_url}}/auth/logout", "host": ["{{gateway_url}}"], "path": ["auth", "logout"] }
+          }
+        },
+        {
+          "name": "POST /auth/logout-all",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{organizer_token}}" }],
+            "description": "Revoga TODOS os refresh tokens do usuário — útil em caso de suspeita de roubo.",
+            "url": { "raw": "{{gateway_url}}/auth/logout-all", "host": ["{{gateway_url}}"], "path": ["auth", "logout-all"] }
+          }
+        },
+        {
+          "name": "POST /auth/buyers/register",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.accessToken) pm.collectionVariables.set('buyer_token', json.accessToken);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Diego\",\n  \"email\": \"diego@email.com\",\n  \"password\": \"MinhaSenha@123\"\n}"
+            },
+            "url": { "raw": "{{gateway_url}}/auth/buyers/register", "host": ["{{gateway_url}}"], "path": ["auth", "buyers", "register"] }
+          }
+        },
+        {
+          "name": "POST /auth/buyers/login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.accessToken) {",
+                  "    pm.collectionVariables.set('buyer_token', json.accessToken);",
+                  "    console.log('Buyer token salvo');",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"diego@email.com\",\n  \"password\": \"MinhaSenha@123\"\n}"
+            },
+            "url": { "raw": "{{gateway_url}}/auth/buyers/login", "host": ["{{gateway_url}}"], "path": ["auth", "buyers", "login"] }
+          }
+        },
+        {
+          "name": "POST /auth/buyer/login (legado)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"diego@email.com\",\n  \"password\": \"MinhaSenha@123\"\n}"
+            },
+            "description": "Rota legada — prefira /auth/buyers/login.",
+            "url": { "raw": "{{gateway_url}}/auth/buyer/login", "host": ["{{gateway_url}}"], "path": ["auth", "buyer", "login"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Categories",
+      "item": [
+        {
+          "name": "GET /categories (público)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway_url}}/categories", "host": ["{{gateway_url}}"], "path": ["categories"] }
+          }
+        },
+        {
+          "name": "POST /categories (organizer)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.id) pm.collectionVariables.set('category_id', json.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{organizer_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Rock\",\n  \"slug\": \"rock\",\n  \"icon\": \"🎸\"\n}"
+            },
+            "url": { "raw": "{{gateway_url}}/categories", "host": ["{{gateway_url}}"], "path": ["categories"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Venues",
+      "item": [
+        {
+          "name": "POST /venues",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.id) pm.collectionVariables.set('venue_id', json.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{organizer_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Estádio do Maracanã\",\n  \"address\": \"Av. Pres. Castelo Branco, Portão 3\",\n  \"city\": \"Rio de Janeiro\",\n  \"state\": \"RJ\",\n  \"zipCode\": \"20271130\",\n  \"latitude\": -22.9122,\n  \"longitude\": -43.2302,\n  \"capacity\": 78838,\n  \"sections\": [\n    {\n      \"name\": \"Pista\",\n      \"seatingType\": \"reserved\",\n      \"rows\": [\"A\", \"B\", \"C\", \"D\"],\n      \"seatsPerRow\": 50\n    },\n    {\n      \"name\": \"Cadeira VIP\",\n      \"seatingType\": \"reserved\",\n      \"rows\": [\"V1\", \"V2\"],\n      \"seatsPerRow\": 20\n    }\n  ]\n}"
+            },
+            "url": { "raw": "{{gateway_url}}/venues", "host": ["{{gateway_url}}"], "path": ["venues"] }
+          }
+        },
+        {
+          "name": "GET /venues",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{organizer_token}}" }],
+            "url": { "raw": "{{gateway_url}}/venues", "host": ["{{gateway_url}}"], "path": ["venues"] }
+          }
+        },
+        {
+          "name": "GET /venues/:id",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{organizer_token}}" }],
+            "url": { "raw": "{{gateway_url}}/venues/{{venue_id}}", "host": ["{{gateway_url}}"], "path": ["venues", "{{venue_id}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Events",
+      "item": [
+        {
+          "name": "POST /events (organizer)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.id) pm.collectionVariables.set('event_id', json.id);",
+                  "  if (json.slug) pm.collectionVariables.set('event_slug', json.slug);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{organizer_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"venueId\": \"{{venue_id}}\",\n  \"categoryId\": \"{{category_id}}\",\n  \"title\": \"Rock in Rio 2025\",\n  \"description\": \"Festival de rock em formato tradicional — headliners internacionais.\",\n  \"startAt\": \"2025-09-13T19:00:00.000Z\",\n  \"endAt\": \"2025-09-13T23:59:00.000Z\",\n  \"imageUrl\": \"https://example.com/rock-in-rio.jpg\"\n}"
+            },
+            "url": { "raw": "{{gateway_url}}/events", "host": ["{{gateway_url}}"], "path": ["events"] }
+          }
+        },
+        {
+          "name": "GET /events (organizer) — lista",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{organizer_token}}" }],
+            "url": {
+              "raw": "{{gateway_url}}/events?page=1&limit=20",
+              "host": ["{{gateway_url}}"],
+              "path": ["events"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "20" },
+                { "key": "status", "value": "on_sale", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /events/:id (organizer)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{organizer_token}}" }],
+            "url": { "raw": "{{gateway_url}}/events/{{event_id}}", "host": ["{{gateway_url}}"], "path": ["events", "{{event_id}}"] }
+          }
+        },
+        {
+          "name": "PATCH /events/:id/status",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{organizer_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"on_sale\"\n}"
+            },
+            "description": "Transições válidas: published, on_sale, sold_out, cancelled, completed. draft NÃO é permitido via API.",
+            "url": { "raw": "{{gateway_url}}/events/{{event_id}}/status", "host": ["{{gateway_url}}"], "path": ["events", "{{event_id}}", "status"] }
+          }
+        },
+        {
+          "name": "GET /events/:slug/public (público)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Rota pública (sem token). Retorna o evento completo com venue, sections, seats, ticketBatches.",
+            "url": { "raw": "{{gateway_url}}/events/{{event_slug}}/public", "host": ["{{gateway_url}}"], "path": ["events", "{{event_slug}}", "public"] }
+          }
+        },
+        {
+          "name": "GET /events/:id/public-meta (interno)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Metadata mínima ({ id, status, organizerId }) — usado pelo booking-service para validar status antes de reservar.",
+            "url": { "raw": "{{gateway_url}}/events/{{event_id}}/public-meta", "host": ["{{gateway_url}}"], "path": ["events", "{{event_id}}", "public-meta"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Ticket Batches",
+      "item": [
+        {
+          "name": "POST /events/:eventId/ticket-batches",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.id) pm.collectionVariables.set('ticket_batch_id', json.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{organizer_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Pista\",\n  \"price\": 350.00,\n  \"totalQuantity\": 200,\n  \"saleStartAt\": \"2025-01-01T00:00:00.000Z\",\n  \"saleEndAt\": \"2025-09-13T18:00:00.000Z\",\n  \"minPerOrder\": 1,\n  \"maxPerOrder\": 4,\n  \"isVisible\": true\n}"
+            },
+            "url": {
+              "raw": "{{gateway_url}}/events/{{event_id}}/ticket-batches",
+              "host": ["{{gateway_url}}"],
+              "path": ["events", "{{event_id}}", "ticket-batches"]
+            }
+          }
+        },
+        {
+          "name": "GET /events/:eventId/ticket-batches",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{organizer_token}}" }],
+            "url": {
+              "raw": "{{gateway_url}}/events/{{event_id}}/ticket-batches",
+              "host": ["{{gateway_url}}"],
+              "path": ["events", "{{event_id}}", "ticket-batches"]
+            }
+          }
+        },
+        {
+          "name": "GET /events/:eventId/ticket-batches/:batchId",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{organizer_token}}" }],
+            "url": {
+              "raw": "{{gateway_url}}/events/{{event_id}}/ticket-batches/{{ticket_batch_id}}",
+              "host": ["{{gateway_url}}"],
+              "path": ["events", "{{event_id}}", "ticket-batches", "{{ticket_batch_id}}"]
+            }
+          }
+        },
+        {
+          "name": "PATCH /events/:eventId/ticket-batches/:batchId",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{organizer_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"price\": 400.00,\n  \"isVisible\": true\n}"
+            },
+            "url": {
+              "raw": "{{gateway_url}}/events/{{event_id}}/ticket-batches/{{ticket_batch_id}}",
+              "host": ["{{gateway_url}}"],
+              "path": ["events", "{{event_id}}", "ticket-batches", "{{ticket_batch_id}}"]
+            }
+          }
+        },
+        {
+          "name": "DELETE /events/:eventId/ticket-batches/:batchId",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{organizer_token}}" }],
+            "url": {
+              "raw": "{{gateway_url}}/events/{{event_id}}/ticket-batches/{{ticket_batch_id}}",
+              "host": ["{{gateway_url}}"],
+              "path": ["events", "{{event_id}}", "ticket-batches", "{{ticket_batch_id}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Bookings",
+      "item": [
+        {
+          "name": "POST /bookings/reservations (buyer)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.id) pm.collectionVariables.set('reservation_id', json.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{buyer_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"{{event_id}}\",\n  \"items\": [\n    { \"ticketBatchId\": \"{{ticket_batch_id}}\", \"seatId\": \"{{seat_id}}\", \"quantity\": 1 }\n  ]\n}"
+            },
+            "description": "Retorna 409 se qualquer assento estiver indisponível (all-or-nothing — libera todos os locks já adquiridos).",
+            "url": { "raw": "{{gateway_url}}/bookings/reservations", "host": ["{{gateway_url}}"], "path": ["bookings", "reservations"] }
+          }
+        },
+        {
+          "name": "DELETE /bookings/reservations/:id (buyer)",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{buyer_token}}" }],
+            "description": "Libera os locks Redis e decrementa reservedCount.",
+            "url": {
+              "raw": "{{gateway_url}}/bookings/reservations/{{reservation_id}}",
+              "host": ["{{gateway_url}}"],
+              "path": ["bookings", "reservations", "{{reservation_id}}"]
+            }
+          }
+        },
+        {
+          "name": "GET /bookings/reservations/availability/:eventId",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{buyer_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"seatIds\": [\"{{seat_id}}\"]\n}"
+            },
+            "description": "Consulta de disponibilidade em tempo real. Atenção: controller lê seatIds do body mesmo sendo GET.",
+            "url": {
+              "raw": "{{gateway_url}}/bookings/reservations/availability/{{event_id}}",
+              "host": ["{{gateway_url}}"],
+              "path": ["bookings", "reservations", "availability", "{{event_id}}"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
