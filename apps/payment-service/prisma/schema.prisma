@@ -10,10 +10,9 @@ datasource db {
 
 // ─── Plans (replicados — tabela seedada, fonte da verdade é event-service) ───
 //
-// Mantemos `Plan` aqui para evitar um round-trip HTTP ao event-service a cada
-// checkout só para pegar `serviceFeePercent`. Os slugs (free/pro/enterprise)
-// são estáveis entre os bancos; UUIDs diferem (cada DB gera o seu no seed).
-// Ver docs/cap-07-payment-service.md para o racional.
+// Mantemos Plan aqui para evitar um round-trip HTTP ao event-service a cada
+// checkout só para pegar serviceFeePercent. Os slugs (free/pro/enterprise) são
+// estáveis entre os bancos; UUIDs diferem (cada DB gera o seu no seed).
 model Plan {
   id                String  @id @default(uuid()) @db.Uuid
   slug              String  @unique // "free" | "pro" | "enterprise"
@@ -31,7 +30,7 @@ model Plan {
 // ─── Organizers (replicados do auth-service via Kafka) ────────────────────────
 //
 // Mesma semântica da réplica em event-service: só campos não-sensíveis. Existe
-// aqui só para resolver `serviceFeePercent` no ato do checkout (via Plan).
+// aqui só para resolver serviceFeePercent no ato do checkout (via Plan).
 model Organizer {
   id   String @id @db.Uuid // id vem do auth-service — sem @default
   name String
@@ -52,10 +51,9 @@ model Organizer {
 
 // ─── Buyers (replicados do auth-service via Kafka) ────────────────────────────
 //
-// Mesma semântica da réplica em booking-service. Existe aqui porque o Stripe
-// Checkout exige `customer_email` no ato da sessão. Chamar booking-service ou
-// auth-service a cada checkout seria acoplamento desnecessário: o email já
-// chega de graça via o mesmo tópico Kafka que o booking consome.
+// Existe aqui porque o Stripe Checkout exige customer_email no ato da sessão.
+// Chamar auth-service a cada checkout seria acoplamento desnecessário: o email
+// já chega de graça via o mesmo tópico Kafka que o booking consome.
 model Buyer {
   id    String  @id @db.Uuid
   email String  @unique
@@ -76,7 +74,6 @@ model Buyer {
 model Order {
   id String @id @default(uuid()) @db.Uuid
 
-  // Referências cross-service (FKs locais para Buyer/Organizer replicados)
   buyer       Buyer     @relation(fields: [buyerId], references: [id])
   buyerId     String    @db.Uuid
   organizer   Organizer @relation(fields: [organizerId], references: [id])
@@ -98,7 +95,7 @@ model Order {
 
   // Idempotency key: hash determinístico dos reservation IDs + buyer.
   // Mesmo conjunto de reservas + mesmo buyer = mesma Checkout Session.
-  // Protege contra retries, double-click, re-envio acidental.
+  // Protege contra retries, double-click, reenvio acidental.
   idempotencyKey String @unique
 
   paymentMethod String? // "card", "pix"

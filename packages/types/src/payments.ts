@@ -19,12 +19,45 @@ export const CreateOrderSchema = z.object({
 });
 export type CreateOrderDto = z.infer<typeof CreateOrderSchema>;
 
+// Resposta real de POST /payments/orders (ver
+// apps/payment-service/src/modules/orders/orders.service.ts:createCheckout):
+// devolve { orderId, checkoutUrl, status } — NÃO tem `id`, `total` nem
+// `expiresAt`. A expiração relevante para o countdown vive na RESERVA
+// (booking-service), não na order. O frontend busca o expiresAt via
+// GET /bookings/reservations/:id quando precisa do timer.
+export const CreateOrderResponseSchema = z.object({
+  orderId: z.uuid(),
+  checkoutUrl: z.url(),
+  status: OrderStatusSchema,
+});
+export type CreateOrderResponse = z.infer<typeof CreateOrderResponseSchema>;
+
+// Resposta de GET /payments/orders/:id (ver OrdersService.getOrder) —
+// retorna o Order Prisma completo com items.
 export const OrderResponseSchema = z.object({
   id: z.uuid(),
+  buyerId: z.uuid(),
+  organizerId: z.uuid(),
+  eventId: z.uuid(),
   status: OrderStatusSchema,
-  total: z.number(),
-  checkoutUrl: z.url(),
-  expiresAt: z.coerce.date(),
+  subtotal: z.coerce.number(),
+  serviceFee: z.coerce.number(),
+  total: z.coerce.number(),
+  stripeCheckoutSessionId: z.string().nullable(),
+  idempotencyKey: z.string(),
+  paidAt: z.coerce.date().nullable(),
+  createdAt: z.coerce.date(),
+  items: z.array(
+    z.object({
+      id: z.uuid(),
+      reservationId: z.uuid(),
+      ticketBatchId: z.uuid(),
+      seatId: z.uuid().nullable(),
+      unitPrice: z.coerce.number(),
+      quantity: z.number().int(),
+      total: z.coerce.number(),
+    }),
+  ),
 });
 
 export type OrderResponse = z.infer<typeof OrderResponseSchema>;

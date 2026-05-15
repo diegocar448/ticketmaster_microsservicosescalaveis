@@ -3,8 +3,9 @@
 # Ex:  make infra-up    → sobe postgres, redis, kafka, elasticsearch
 #      make dev         → sobe infra + inicia todos os serviços em modo watch
 
-.PHONY: dev build test lint type-check \
-        infra-up infra-down infra-logs \
+.PHONY: dev dev-services dev-stop dev-status dev-logs \
+        build test lint type-check \
+        infra-up infra-down infra-logs kafka-topics \
         db-generate db-migrate db-seed db-studio \
         copy-env gen-keys \
         github-setup clean help
@@ -40,6 +41,12 @@ infra-down:
 
 infra-logs:
 	docker compose logs -f postgres redis kafka elasticsearch
+
+# Pré-cria todos os tópicos Kafka usados pelos serviços (idempotente).
+# dev-services já chama isso automaticamente — use manualmente após um
+# `docker compose down -v` (que apaga o volume e zera os tópicos).
+kafka-topics:
+	@bash scripts/kafka-topics.sh
 
 # ─── Banco de dados ───────────────────────────────────────────────────────────
 
@@ -160,9 +167,14 @@ help:
 	@echo "  make gen-keys     Gera chaves RSA e distribui public key"
 	@echo "  make setup        Setup completo do ambiente (primeira vez)"
 	@echo "  make dev          Sobe infra + serviços em modo watch"
+	@echo "  make dev-services Inicia serviços NestJS em background (hot reload)"
+	@echo "  make dev-stop     Para os serviços iniciados por dev-services"
+	@echo "  make dev-status   Status (porta + PID) dos serviços"
+	@echo "  make dev-logs     Tail dos logs dos serviços"
 	@echo "  make infra-up     Sobe apenas postgres, redis, kafka, elasticsearch"
 	@echo "  make infra-down   Para todos os containers"
 	@echo "  make infra-logs   Tail de logs da infra"
+	@echo "  make kafka-topics Pré-cria todos os tópicos Kafka (idempotente)"
 	@echo ""
 	@echo "Banco de dados:"
 	@echo "  make db-generate  Gera os Prisma Clients (antes de type-check/build)"

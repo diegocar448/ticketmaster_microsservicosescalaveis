@@ -9,11 +9,7 @@
 
 import { Controller, Logger } from '@nestjs/common';
 import { EventPattern, Payload } from '@nestjs/microservices';
-import {
-  KAFKA_TOPICS,
-  OrganizerReplicatedEventSchema,
-} from '@showpass/types';
-
+import { KAFKA_TOPICS, OrganizerReplicatedEventSchema } from '@showpass/types';
 import { PrismaService } from '../../prisma/prisma.service.js';
 
 @Controller()
@@ -23,53 +19,43 @@ export class OrganizersConsumer {
   constructor(private readonly prisma: PrismaService) {}
 
   @EventPattern(KAFKA_TOPICS.AUTH_ORGANIZER_CREATED)
-  async onCreated(@Payload() rawPayload: unknown): Promise<void> {
-    await this.upsertOrganizer(rawPayload, 'AUTH_ORGANIZER_CREATED');
-  }
-
-  @EventPattern(KAFKA_TOPICS.AUTH_ORGANIZER_UPDATED)
-  async onUpdated(@Payload() rawPayload: unknown): Promise<void> {
-    await this.upsertOrganizer(rawPayload, 'AUTH_ORGANIZER_UPDATED');
-  }
-
-  private async upsertOrganizer(rawPayload: unknown, topic: string): Promise<void> {
-    const parsed = OrganizerReplicatedEventSchema.safeParse(rawPayload);
+  async onCreated(@Payload() message: unknown): Promise<void> {
+    const parsed = OrganizerReplicatedEventSchema.safeParse(message);
     if (!parsed.success) {
-      this.logger.error(`Payload inválido em ${topic}`, { errors: parsed.error.issues });
+      this.logger.warn('auth.organizer.created inválido', { issues: parsed.error.issues });
       return;
     }
 
-    const event = parsed.data;
+    const { id, name, slug, planSlug } = parsed.data;
 
-    const plan = await this.prisma.plan.findUnique({
-      where: { slug: event.planSlug },
-      select: { id: true },
-    });
-
+    // planSlug → planId: os UUIDs diferem entre bancos (cada DB seedou o seu),
+    // mas o slug é estável. Por isso o evento carrega planSlug, não planId.
+    const plan = await this.prisma.plan.findUnique({ where: { slug: planSlug } });
     if (!plan) {
-      this.logger.error(
-        `${topic}: plan com slug "${event.planSlug}" não existe — rode o seed de Plans antes`,
-      );
+      this.logger.error('plano inexistente no payment-service', { planSlug });
       return;
     }
 
     await this.prisma.organizer.upsert({
-      where: { id: event.id },
-      create: {
-        id: event.id,
-        name: event.name,
-        slug: event.slug,
-        planId: plan.id,
-        lastSyncAt: new Date(),
-      },
-      update: {
-        name: event.name,
-        slug: event.slug,
-        planId: plan.id,
-        lastSyncAt: new Date(),
-      },
+      where: { id },
+      create: { id, name, slug, planId: plan.id, lastSyncAt: new Date() },
+      update: { name, slug, planId: plan.id, lastSyncAt: new Date() },
     });
+  }
 
-    this.logger.log(`Organizer replicado (${topic}): id=${event.id}, slug=${event.slug}`);
+  @EventPattern(KAFKA_TOPICS.AUTH_ORGANIZER_UPDATED)
+  async onUpdated(@Payload() message: unknown): Promise<void> {
+    const parsed = OrganizerReplicatedEventSchema.safeParse(message);
+    if (!parsed.success) return;
+
+    const { id, name, slug, planSlug } = parsed.data;
+    const plan = await this.prisma.plan.findUnique({ where: { slug: planSlug } });
+    if (!plan) return;
+
+    await this.prisma.organizer.upsert({
+      where: { id },
+      create: { id, name, slug, planId: plan.id, lastSyncAt: new Date() },
+      update: { name, slug, planId: plan.id, lastSyncAt: new Date() },
+    });
   }
 }

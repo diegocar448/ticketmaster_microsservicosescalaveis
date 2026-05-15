@@ -3,44 +3,37 @@
 // Endpoints de checkout — exposto via gateway em /payments/orders.
 
 import {
-  Body,
   Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
   Post,
+  Get,
+  Body,
+  Param,
   Req,
   UseGuards,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import {
-  type AuthenticatedUser,
-  CreateOrderSchema,
-  type CreateOrderDto,
-  CurrentUser,
-} from '@showpass/types';
 
+import { CurrentUser, type AuthenticatedUser } from '@showpass/types';
+
+import { OrdersService } from './orders.service.js';
 import { BuyerGuard } from '../../common/guards/buyer.guard.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
-import { OrdersService } from './orders.service.js';
+import { CreateOrderSchema, type CreateOrderDto } from './dto/create-order.dto.js';
 
 @Controller('payments/orders')
 export class OrdersController {
   constructor(private readonly orders: OrdersService) {}
 
-  /**
-   * Cria Checkout Session no Stripe para as reservas informadas.
-   * Requer buyer autenticado. Idempotente por conjunto (reservas + buyer).
-   */
   @Post()
   @UseGuards(BuyerGuard)
   async create(
-    @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(CreateOrderSchema)) dto: CreateOrderDto,
+    @CurrentUser() user: AuthenticatedUser,
     @Req() req: Request,
-  ): Promise<{ orderId: string; checkoutUrl: string }> {
-    // Repassar auth headers para o booking-service (autorização em cascata).
-    // O booking.service confia nos mesmos headers que o gateway injeta aqui.
+  ) {
+    // Repassa os headers x-user-* do gateway para o booking-service validar
+    // a reserva também (defesa em profundidade — não confiamos só no gateway)
     const authHeaders: Record<string, string> = {
       'x-user-id': String(req.headers['x-user-id'] ?? ''),
       'x-user-type': String(req.headers['x-user-type'] ?? ''),
@@ -50,15 +43,11 @@ export class OrdersController {
     return this.orders.createCheckout(user.id, dto.reservationIds, authHeaders);
   }
 
-  /**
-   * Consulta pedido — útil para o frontend atualizar o status após redirect
-   * do Stripe (success/cancel URLs).
-   */
   @Get(':id')
   @UseGuards(BuyerGuard)
-  getOne(
-    @CurrentUser() user: AuthenticatedUser,
+  async findOne(
     @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.orders.getOrder(id, user.id);
   }

@@ -45,16 +45,30 @@ export type KafkaTopic = (typeof KAFKA_TOPICS)[keyof typeof KAFKA_TOPICS];
 
 // ─── Payloads tipados ─────────────────────────────────────────────────────────
 
+// Contrato do tópico payments.payment-confirmed.
+// O emitter está em payment-service/webhooks.controller.ts (handleSessionCompleted).
+// Consumer principal: worker-service (cap-09) — gera ingressos, PDF e e-mail.
+//
+// Mantém TODOS os campos que o emitter envia para evitar `.strip()` silencioso
+// do Zod (objeto por padrão remove campos extras, e o consumer veria `undefined`
+// nos campos não declarados).
 export const PaymentConfirmedEventSchema = z.object({
   orderId: z.uuid(),
   buyerId: z.uuid(),
   organizerId: z.uuid(),
+  // eventId é necessário no consumer para popular Ticket.eventId e enriquecer
+  // o e-mail/PDF com dados do evento sem fazer round-trip extra.
+  eventId: z.uuid(),
   items: z.array(
     z.object({
       reservationId: z.uuid(),
       ticketBatchId: z.uuid(),
       seatId: z.uuid().nullable(),
       unitPrice: z.number(),
+      // quantity NUNCA pode faltar: para general admission (sem seatId)
+      // é comum quantity > 1 — sem o campo, geramos só 1 ingresso onde
+      // deveriam ser N.
+      quantity: z.number().int().positive(),
     })
   ),
   paidAt: z.coerce.date(),
@@ -77,6 +91,37 @@ export const ReservationCreatedEventSchema = z.object({
 });
 
 export type ReservationCreatedEvent = z.infer<typeof ReservationCreatedEventSchema>;
+
+// ─── Event replication (event-service → booking-service) ─────────────────────
+//
+// Por que replicar Event no booking?
+// O payment-service precisa de `eventTitle` e `thumbnailUrl` para montar os
+// line_items do Stripe Checkout (product_data.name exige string não-vazia).
+// A rota GET /bookings/reservations/:id é consumida pelo payment síncrono, e
+// enriquecer o response com dados do event-service via HTTP custaria +50ms no
+// path quente — inaceitável em pico de tráfego. Com réplica local, é um JOIN.
+//
+// Mesma regra dos outros consumers: campos sensíveis NUNCA trafegam.
+// Emitido em:
+//   - transição para `on_sale` (EVENT_PUBLISHED) — primeira vez que booking precisa
+//   - qualquer update subsequente (EVENT_UPDATED) — manter nome/thumbnail em dia
+// Cancelamento (EVENT_CANCELLED) já existia — não altera a réplica, só aciona
+// lógica de compensação no booking (cancelar reservas pendentes).
+
+export const EventReplicatedEventSchema = z.object({
+  id: z.uuid(),
+  organizerId: z.uuid(),
+  title: z.string(),
+  slug: z.string(),
+  status: z.string(),
+  startAt: z.coerce.date(),
+  endAt: z.coerce.date(),
+  venueCity: z.string(),
+  venueState: z.string(),
+  thumbnailUrl: z.string().nullable(),
+});
+
+export type EventReplicatedEvent = z.infer<typeof EventReplicatedEventSchema>;
 
 // ─── Ticket Batch events (event-service → booking-service) ───────────────────
 //

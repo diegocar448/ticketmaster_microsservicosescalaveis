@@ -99,6 +99,8 @@ export const CreateEventSchema = z.object({
 
 export type CreateEventDto = z.infer<typeof CreateEventSchema>;
 
+// Resumo de evento — aproxima o EventListItem do event-service
+// (GET /events lista). NÃO é o que GET /events/:slug/public devolve.
 export const EventResponseSchema = z.object({
   id: z.uuid(),
   title: z.string(),
@@ -116,6 +118,90 @@ export const EventResponseSchema = z.object({
 });
 
 export type EventResponse = z.infer<typeof EventResponseSchema>;
+
+// ─── Event público (detalhe) ──────────────────────────────────────────────────
+//
+// Shape REAL de GET /events/:slug/public (ver events.repository.ts:EventPublic).
+// É o Prisma Event completo + venue (com sections → seats) + ticketBatches +
+// organizer + category. O frontend (cap-11) usa venue.sections[].seats[] para
+// montar o SVG e ticketBatches para o seletor de lote.
+//
+// Atenção: NÃO existe campo `hasSeatingMap` nem `sections` no topo do objeto —
+// as seções vêm aninhadas em `venue.sections`. `maxTicketsPerOrder` é campo
+// direto do Event.
+
+export const SeatResponseSchema = z.object({
+  id: z.uuid(),
+  row: z.string(),
+  number: z.number().int(),
+  // Coordenadas do mapa SVG (se a venue tiver layout posicional)
+  mapX: z.number().nullable(),
+  mapY: z.number().nullable(),
+});
+
+export const SectionResponseSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  seatingType: SeatingTypeSchema,
+  seats: z.array(SeatResponseSchema),
+});
+
+export const TicketBatchResponseSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  price: z.coerce.number(),
+  totalQuantity: z.number().int(),
+  soldCount: z.number().int(),
+  reservedCount: z.number().int(),
+  sectionId: z.uuid().nullable(),
+  isVisible: z.boolean(),
+  saleStartAt: z.coerce.date(),
+  saleEndAt: z.coerce.date(),
+});
+
+export const EventPublicResponseSchema = z.object({
+  id: z.uuid(),
+  title: z.string(),
+  slug: z.string(),
+  description: z.string(),
+  status: EventStatusSchema,
+  startAt: z.coerce.date(),
+  endAt: z.coerce.date(),
+  thumbnailUrl: z.url().nullable(),
+  maxTicketsPerOrder: z.number().int(),
+  venueCity: z.string(),
+  venueState: z.string(),
+  venue: z.object({
+    id: z.uuid(),
+    name: z.string(),
+    address: z.string(),
+    city: z.string(),
+    state: z.string(),
+    sections: z.array(SectionResponseSchema),
+  }),
+  category: z.object({
+    id: z.uuid(),
+    name: z.string(),
+    slug: z.string(),
+  }),
+  organizer: z.object({
+    name: z.string(),
+    slug: z.string(),
+  }),
+  ticketBatches: z.array(TicketBatchResponseSchema),
+});
+
+export type EventPublicResponse = z.infer<typeof EventPublicResponseSchema>;
+
+// Lista paginada — shape real de GET /events (event-service EventList).
+export const EventListResponseSchema = z.object({
+  items: z.array(EventResponseSchema),
+  total: z.number().int(),
+  page: z.number().int(),
+  limit: z.number().int(),
+});
+
+export type EventListResponse = z.infer<typeof EventListResponseSchema>;
 
 // ─── Ticket Batch ─────────────────────────────────────────────────────────────
 //

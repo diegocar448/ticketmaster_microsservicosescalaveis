@@ -68,6 +68,53 @@ model ReservationItem {
   @@map("reservation_items")
 }
 
+// ─── Réplica do Event (sincronizada via Kafka) ────────────────────────────────
+//
+// Por que replicar Event aqui?
+// O payment-service consulta GET /bookings/reservations/:id para montar os
+// line_items do Stripe Checkout. Stripe exige `product_data.name` não-vazio —
+// precisamos devolver o TÍTULO do evento (e opcionalmente thumbnailUrl).
+//
+// Sem réplica, precisaríamos:
+//   (a) chamar o event-service em cada GET /reservations/:id (+50ms HTTP), ou
+//   (b) vazar o acoplamento para o payment-service (HTTP direto event→payment).
+//
+// Réplica local permite JOIN Prisma (0.5ms) e mantém booking como fronteira
+// autossuficiente. Trade-off aceito: eventual consistency — se o organizer
+// renomeia o evento durante o checkout, o Stripe pode mostrar o título antigo
+// por ~1s até o consumer aplicar o UPDATE. Aceitável: rename é raro e o dado
+// é cosmético no recibo.
+//
+// Campos NÃO replicados: description, reservedCount, soldCount, totalCapacity
+// — booking não precisa deles. Menos superfície = menos drift.
+model Event {
+  // id vem do event-service (mesmo UUID) — permite correlação cross-service
+  id          String @id @db.Uuid
+  organizerId String @db.Uuid
+
+  title String
+  slug  String @unique
+
+  // Status replicado só para auditoria: booking já valida status via
+  // GET /events/:id/public-meta no `create` de reserva. Campo mantido aqui
+  // para observability e para responder findOne sem nova chamada HTTP.
+  status String
+
+  startAt DateTime
+  endAt   DateTime
+
+  venueCity  String
+  venueState String
+
+  thumbnailUrl String?
+
+  // Timestamp do último evento aplicado — debug/observability
+  lastSyncAt DateTime @default(now())
+
+  @@index([organizerId])
+  @@map("events")
+}
+
 // ─── Réplica do TicketBatch (sincronizada via Kafka) ──────────────────────────
 //
 // Por que replicar aqui em vez de chamar o event-service a cada reserva?

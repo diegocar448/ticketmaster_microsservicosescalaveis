@@ -143,10 +143,21 @@
       "Bash(curl -s -o /dev/null http://localhost:3002/webhooks/stripe --max-time 1)",
       "Bash(curl -s -o /dev/null http://localhost:3000/health --max-time 1)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3006/health)",
-      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3006/auth/buyers/login)"
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3006/auth/buyers/login)",
+      "Bash(kill -9 11004 11005)",
+      "Bash(lsof -ti:3000)",
+      "Bash(xargs -r kill -9)",
+      "Bash(grep -n \"payment\\\\|case \\\\$\" /home/diegocar448/projects/ticketmaster_microsserviçosescalaveis/scripts/dev.sh)",
+      "Bash(./scripts/dev.sh payment *)",
+      "Bash(pnpm --filter @showpass/payment-service run db:seed)",
+      "Bash(pnpm db:migrate --name event_replicated_from_event_service)",
+      "Bash(rtk wc *)",
+      "Bash(rtk grep *)",
+      "Bash(rtk ls *)"
     ],
     "additionalDirectories": [
-      "/tmp"
+      "/tmp",
+      "/tmp/showpass-logs"
     ]
   },
   "hooks": {

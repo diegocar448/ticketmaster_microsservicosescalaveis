@@ -82,6 +82,11 @@ services:
     ports:
       - "9092:9092"
       - "29092:29092"
+    # Volume dedicado para logs Kafka (KRaft metadata + partições).
+    # Sem isso, ao derrubar o container todos os tópicos e offsets de consumer
+    # se perdem — ou seja, seeds/reservas emitidas sumem até re-emitir.
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
     networks:
       - data
     healthcheck:
@@ -303,3 +308,4 @@ networks:
 volumes:
   postgres_data:
   elasticsearch_data:
+  kafka_data:

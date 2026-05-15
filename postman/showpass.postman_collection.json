@@ -1,7 +1,7 @@
 {
   "info": {
-    "name": "ShowPass — Tutorial (até cap-06)",
-    "description": "Coleção com todos os endpoints implementados até o cap-06 do tutorial ShowPass.\n\n## Como usar\n\n1. Importe este arquivo no Postman (File → Import).\n2. As variáveis `gateway_url`, `auth_url`, `event_url`, `booking_url` já estão configuradas em `Variables`.\n3. Rode primeiro **Auth → Login Organizer** ou **Auth → Login Buyer** — o token é salvo automaticamente em `organizer_token` / `buyer_token` via test script.\n4. Os endpoints autenticados usam `{{organizer_token}}` ou `{{buyer_token}}` no header `Authorization`.\n\n## Portas\n\n- Gateway: 3000 (entrada principal, proxy + JWT)\n- Auth-service: 3006\n- Event-service: 3003\n- Booking-service: 3004\n\nPor padrão os requests vão pelo **gateway** (`{{gateway_url}}`). Para debug, troque para a porta direta do serviço.",
+    "name": "ShowPass — Tutorial (até cap-07)",
+    "description": "Coleção com todos os endpoints implementados até o cap-07 do tutorial ShowPass (auth, events, bookings e payments).\n\n## Como usar\n\n1. Importe este arquivo no Postman (File → Import).\n2. As variáveis `gateway_url`, `auth_url`, `event_url`, `booking_url`, `payment_url` já estão configuradas em `Variables`.\n3. Rode primeiro **Auth → Login Organizer** ou **Auth → Login Buyer** — o token é salvo automaticamente em `organizer_token` / `buyer_token` via test script.\n4. Os endpoints autenticados usam `{{organizer_token}}` ou `{{buyer_token}}` no header `Authorization`.\n5. **Payments:** após criar uma reserva (Bookings → POST /bookings/reservations), rode Payments → POST /payments/orders. O `checkoutUrl` aparece na resposta e é salvo em `{{checkout_url}}` — abra essa URL no navegador para pagar com cartão de teste do Stripe (`4242 4242 4242 4242`).\n\n## Portas\n\n- Gateway: 3000 (entrada principal, proxy + JWT)\n- Auth-service: 3006\n- Event-service: 3003\n- Booking-service: 3004\n- Payment-service: 3002\n\nPor padrão os requests vão pelo **gateway** (`{{gateway_url}}`). Para debug, troque para a porta direta do serviço.\n\n## Webhooks do Stripe\n\nOs webhooks do Stripe NÃO são testados pelo Postman — use a Stripe CLI:\n\n```bash\nstripe listen --forward-to http://localhost:3002/webhooks/stripe\n```\n\nA CLI assina cada evento com HMAC-SHA256 usando o secret do `stripe login`. Um POST manual para `/webhooks/stripe` sem a assinatura correta retorna 400.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -9,6 +9,7 @@
     { "key": "auth_url", "value": "http://localhost:3006", "type": "string" },
     { "key": "event_url", "value": "http://localhost:3003", "type": "string" },
     { "key": "booking_url", "value": "http://localhost:3004", "type": "string" },
+    { "key": "payment_url", "value": "http://localhost:3002", "type": "string" },
     { "key": "organizer_token", "value": "", "type": "string" },
     { "key": "buyer_token", "value": "", "type": "string" },
     { "key": "organizer_id", "value": "", "type": "string" },
@@ -18,7 +19,9 @@
     { "key": "category_id", "value": "", "type": "string" },
     { "key": "ticket_batch_id", "value": "", "type": "string" },
     { "key": "seat_id", "value": "", "type": "string" },
-    { "key": "reservation_id", "value": "", "type": "string" }
+    { "key": "reservation_id", "value": "", "type": "string" },
+    { "key": "order_id", "value": "", "type": "string" },
+    { "key": "checkout_url", "value": "", "type": "string" }
   ],
   "item": [
     {
@@ -526,6 +529,19 @@
           }
         },
         {
+          "name": "GET /bookings/reservations/:id (buyer)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{buyer_token}}" }],
+            "description": "Detalhe da reserva com itens (ticketBatch + seat). Usado pelo payment-service no fluxo de checkout.",
+            "url": {
+              "raw": "{{gateway_url}}/bookings/reservations/{{reservation_id}}",
+              "host": ["{{gateway_url}}"],
+              "path": ["bookings", "reservations", "{{reservation_id}}"]
+            }
+          }
+        },
+        {
           "name": "DELETE /bookings/reservations/:id (buyer)",
           "request": {
             "method": "DELETE",
@@ -555,6 +571,59 @@
               "raw": "{{gateway_url}}/bookings/reservations/availability/{{event_id}}",
               "host": ["{{gateway_url}}"],
               "path": ["bookings", "reservations", "availability", "{{event_id}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Payments",
+      "item": [
+        {
+          "name": "POST /payments/orders (buyer)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201 || pm.response.code === 200) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.orderId) pm.collectionVariables.set('order_id', json.orderId);",
+                  "  if (json.checkoutUrl) pm.collectionVariables.set('checkout_url', json.checkoutUrl);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{buyer_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reservationIds\": [\"{{reservation_id}}\"]\n}"
+            },
+            "description": "Cria um Pedido (status=pending) + Stripe Checkout Session. Idempotente: o mesmo conjunto de reservationIds sempre retorna a mesma session (sha256(buyerId + reservationIds ordenados) como idempotencyKey). A resposta traz `checkoutUrl` — abra no navegador para pagar com cartão de teste 4242 4242 4242 4242.",
+            "url": {
+              "raw": "{{gateway_url}}/payments/orders",
+              "host": ["{{gateway_url}}"],
+              "path": ["payments", "orders"]
+            }
+          }
+        },
+        {
+          "name": "GET /payments/orders/:id (buyer)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{buyer_token}}" }],
+            "description": "Detalhe do pedido (inclui items e status). Retorna 404 se o order não pertencer ao buyer (OWASP A01 — evita IDOR probing via 403).",
+            "url": {
+              "raw": "{{gateway_url}}/payments/orders/{{order_id}}",
+              "host": ["{{gateway_url}}"],
+              "path": ["payments", "orders", "{{order_id}}"]
             }
           }
         }
