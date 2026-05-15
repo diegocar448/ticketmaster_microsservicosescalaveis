@@ -19,65 +19,67 @@
 // (pular o gateway evita risco do gateway reprocessar/parsear o body).
 
 import {
-  BadRequestException,
   Controller,
-  HttpCode,
-  Logger,
   Post,
   Req,
+  HttpCode,
+  BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
-import { KafkaProducerService } from '@showpass/kafka';
-import { KAFKA_TOPICS } from '@showpass/types';
 import Stripe from 'stripe';
 
+import { KafkaProducerService } from '@showpass/kafka';
+import { KAFKA_TOPICS } from '@showpass/types';
 import { PrismaService } from '../../prisma/prisma.service.js';
 
 @Controller('webhooks')
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);
-  private readonly stripe: Stripe;
-  private readonly webhookSecret: string;
+
+  private readonly stripe = new Stripe(process.env['STRIPE_SECRET_KEY']!);
+  private readonly webhookSecret = process.env['STRIPE_WEBHOOK_SECRET']!;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly kafka: KafkaProducerService,
-  ) {
-    const apiKey = process.env['STRIPE_SECRET_KEY'];
-    const secret = process.env['STRIPE_WEBHOOK_SECRET'];
-    if (!apiKey || !secret) {
-      throw new Error('STRIPE_SECRET_KEY ou STRIPE_WEBHOOK_SECRET não configurados');
-    }
-    this.stripe = new Stripe(apiKey);
-    this.webhookSecret = secret;
-  }
+  ) {}
 
+  /**
+   * OWASP A10 (Server-Side Request Forgery / Webhook Security):
+   * Validamos a assinatura HMAC-SHA256 ANTES de qualquer outra coisa.
+   * Sem isso, qualquer pessoa poderia POSTar para /webhooks/stripe e
+   * "confirmar" pagamentos falsos.
+   *
+   * O Stripe SDK também checa o timestamp (rejeita eventos > 5 min —
+   * previne replay attacks).
+   */
   @Post('stripe')
-  @HttpCode(200) // Stripe interpreta qualquer != 200 como falha e retenta
-  async handleStripe(
-    @Req() req: RawBodyRequest<Request>,
-  ): Promise<{ received: boolean }> {
+  @HttpCode(200)
+  async handle(@Req() req: RawBodyRequest<Request>): Promise<{ received: boolean }> {
     const signature = req.headers['stripe-signature'];
-    if (!signature || Array.isArray(signature)) {
+    if (!signature || typeof signature !== 'string') {
       throw new BadRequestException('Assinatura ausente');
     }
-
     if (!req.rawBody) {
-      // Se cair aqui, o main.ts está mal configurado (rawBody: true ausente).
-      throw new BadRequestException('Raw body indisponível');
+      // Fail-fast explícito: se alguém remover rawBody: true no main.ts,
+      // o erro aparece aqui em vez de silenciosamente aceitar tudo
+      throw new BadRequestException('rawBody ausente — checar main.ts');
     }
 
     let event: Stripe.Event;
     try {
-      // constructEvent verifica HMAC E timestamp (rejeita > 5 minutos → replay).
       event = this.stripe.webhooks.constructEvent(
         req.rawBody,
         signature,
         this.webhookSecret,
       );
     } catch (err) {
-      this.logger.warn('Assinatura Stripe inválida', { err: (err as Error).message });
+      this.logger.warn('Assinatura Stripe inválida', {
+        error: (err as Error).message,
+        ip: req.ip,
+      });
       throw new BadRequestException('Assinatura inválida');
     }
 
@@ -85,17 +87,24 @@ export class WebhooksController {
 
     switch (event.type) {
       case 'checkout.session.completed':
-        await this.handleCheckoutCompleted(event.data.object);
+        // Escolhemos checkout.session.completed (e não payment_intent.succeeded)
+        // porque a session carrega nosso metadata.order_id de forma estável.
+        // O payment_intent também teria, mas exige um fetch extra.
+        await this.handleSessionCompleted(event.data.object);
         break;
+
       case 'payment_intent.payment_failed':
         await this.handlePaymentFailed(event.data.object);
         break;
+
       case 'checkout.session.expired':
         await this.handleCheckoutExpired(event.data.object);
         break;
+
       case 'charge.refunded':
         await this.handleRefunded(event.data.object);
         break;
+
       default:
         this.logger.debug(`Evento ignorado: ${event.type}`);
     }
@@ -103,13 +112,7 @@ export class WebhooksController {
     return { received: true };
   }
 
-  // ─── Handlers ──────────────────────────────────────────────────────────────
-
-  // checkout.session.completed é o evento estável do Stripe para "pagamento
-  // OK em fluxo de Checkout". payment_intent.succeeded também é emitido, mas
-  // processar os dois seria duplicar. Escolhemos checkout.session.completed
-  // porque carrega os metadados que setamos na session.
-  private async handleCheckoutCompleted(session: Stripe.Checkout.Session): Promise<void> {
+  private async handleSessionCompleted(session: Stripe.Checkout.Session): Promise<void> {
     const orderId = session.metadata?.['order_id'];
     if (!orderId) return;
 
@@ -122,69 +125,62 @@ export class WebhooksController {
       return;
     }
 
-    // Idempotência: se já foi processado, ignorar silenciosamente.
+    // IDEMPOTÊNCIA no processamento: o Stripe pode reentregar o mesmo evento.
+    // Checar status === 'paid' antes de qualquer update é o jeito mais simples
+    // (não precisa de tabela de "eventos processados" para o nosso volume).
     if (order.status === 'paid') {
       this.logger.log('Webhook ignorado: pedido já pago', { orderId });
       return;
     }
 
-    // Retrieve expandido para pegar dados do Payment Intent (cartão etc).
+    // Buscar detalhes do pagamento
     const paymentIntentId =
       typeof session.payment_intent === 'string' ? session.payment_intent : null;
+    const paymentIntent = paymentIntentId
+      ? await this.stripe.paymentIntents.retrieve(paymentIntentId, {
+          expand: ['latest_charge'],
+        })
+      : null;
 
-    let chargeId: string | null = null;
-    let paymentMethod: string | null = null;
-    let cardLastFour: string | null = null;
-    let cardBrand: string | null = null;
-
-    if (paymentIntentId) {
-      const pi = await this.stripe.paymentIntents.retrieve(paymentIntentId, {
-        expand: ['latest_charge'],
-      });
-      const charge = pi.latest_charge as Stripe.Charge | null;
-      chargeId = charge?.id ?? null;
-      paymentMethod = charge?.payment_method_details?.type ?? null;
-      cardLastFour = charge?.payment_method_details?.card?.last4 ?? null;
-      cardBrand = charge?.payment_method_details?.card?.brand ?? null;
-    }
-
-    const paidAt = new Date();
+    const charge = paymentIntent?.latest_charge as Stripe.Charge | null;
 
     await this.prisma.order.update({
       where: { id: orderId },
       data: {
         status: 'paid',
-        stripeChargeId: chargeId,
-        paymentMethod,
-        cardLastFour,
-        cardBrand,
-        paidAt,
+        stripeChargeId: charge?.id ?? null,
+        paymentMethod: charge?.payment_method_details?.type ?? 'card',
+        cardLastFour: charge?.payment_method_details?.card?.last4 ?? null,
+        cardBrand: charge?.payment_method_details?.card?.brand ?? null,
+        paidAt: new Date(),
       },
     });
 
-    // Emitir para o worker-service gerar ingressos + enviar e-mail (cap-09).
+    // worker-service escuta payment.confirmed, gera ingressos e envia email
     await this.kafka.emit(
       KAFKA_TOPICS.PAYMENT_CONFIRMED,
       {
         orderId: order.id,
         buyerId: order.buyerId,
         organizerId: order.organizerId,
+        eventId: order.eventId,
         items: order.items.map((i) => ({
           reservationId: i.reservationId,
           ticketBatchId: i.ticketBatchId,
           seatId: i.seatId,
           unitPrice: Number(i.unitPrice),
+          quantity: i.quantity,
         })),
-        paidAt,
+        paidAt: new Date().toISOString(),
       },
-      order.id,
+      orderId,
     );
 
-    this.logger.log('Pagamento confirmado', { orderId, total: order.total.toString() });
+    this.logger.log('Pagamento confirmado', { orderId, total: Number(order.total) });
   }
 
-  private async handlePaymentFailed(pi: Stripe.PaymentIntent): Promise<void> {
-    const orderId = pi.metadata['order_id'];
+  private async handlePaymentFailed(paymentIntent: Stripe.PaymentIntent): Promise<void> {
+    const orderId = paymentIntent.metadata?.['order_id'];
     if (!orderId) return;
 
     const order = await this.prisma.order.findFirst({
@@ -226,7 +222,7 @@ export class WebhooksController {
   }
 
   private async handleRefunded(charge: Stripe.Charge): Promise<void> {
-    const orderId = charge.metadata['order_id'];
+    const orderId = charge.metadata?.['order_id'];
     if (!orderId) return;
 
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });

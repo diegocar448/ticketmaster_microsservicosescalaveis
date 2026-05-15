@@ -9,6 +9,7 @@ import { RedisModule } from '@showpass/redis';
 import { KafkaModule } from '@showpass/kafka';
 import { ReservationsModule } from './modules/reservations/reservations.module.js';
 import { TicketBatchesModule } from './modules/ticket-batches/ticket-batches.module.js';
+import { EventsModule } from './modules/events/events.module.js';
 import { BuyersModule } from './modules/buyers/buyers.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 
@@ -30,6 +31,9 @@ import { HealthModule } from './modules/health/health.module.js';
     ReservationsModule,
     // Consumer Kafka: mantém réplica local de TicketBatch atualizada
     TicketBatchesModule,
+    // Consumer Kafka: replica Event (title + thumbnail) para o payment-service
+    // enriquecer os line_items do Stripe Checkout sem chamar event-service.
+    EventsModule,
     // Consumer Kafka: replica buyer do auth-service para satisfazer FK
     // Reservation.buyerId. Dados sensíveis NUNCA trafegam (ver BuyersConsumer).
     BuyersModule,

@@ -1,59 +1,85 @@
 # Capítulo 8 — Search Service
 
-> **Objetivo:** Construir busca full-text de eventos com Elasticsearch 9, sincronização via CDC (Debezium + Kafka), e suporte a filtros geográficos para "eventos perto de mim".
+> **Objetivo:** Construir busca full-text de eventos com Elasticsearch 9, sincronização via **domain events Kafka** (mesmo padrão dos demais bounded contexts), e fundamentos para evoluir para CDC quando o volume justificar.
 
 ## O que você vai aprender
 
-- Por que Elasticsearch e não PostgreSQL LIKE para busca em grande escala
+- Por que Elasticsearch e não PostgreSQL `LIKE` para busca em grande escala
 - Tokenização, stemming e fuzziness — encontra resultados mesmo com erros de digitação
 - Similaridade: buscar "casa" retorna "casinha", "casarão", "casebre"
-- CDC (Change Data Capture): Debezium captura o WAL do Postgres e publica no Kafka
 - Index mapping com analisadores de texto em português
-- Geo distance filter — eventos em raio de X km
+- Indexação assíncrona via Kafka (`events.event-published` / `events.event-updated` / `events.event-cancelled`)
+- Pagination, autocomplete (`edge_ngram`) e sort por relevância vs cronologia
+- Quando trocar Kafka domain events por CDC com Debezium (Outbox pattern — cap-18)
 
 ---
 
-## Por que não usar SQL LIKE?
+## Por que não usar SQL `LIKE`?
 
 ```sql
 -- ❌ O jeito ERRADO que NÃO funciona em grande escala:
 SELECT * FROM events
-WHERE name LIKE '%Bruno Mars%'
-  AND start_date >= '2026-04-01'
-  AND end_date   <= '2026-04-30'
+WHERE title ILIKE '%Bruno Mars%'
+  AND start_at >= '2026-04-01'
+  AND start_at <= '2026-04-30';
 ```
-
-**Problemas desta query:**
 
 | Problema | Impacto |
 |---|---|
-| `LIKE '%palavra%'` não usa índice B-tree | Full table scan em 10M de eventos = lento |
+| `ILIKE '%palavra%'` não usa índice B-tree | Full table scan em 10M de eventos = lento |
 | Sem tolerância a typos | "Bruno Marz" não encontra "Bruno Mars" |
-| Sem stemming | "shows" não encontra "show" |
-| Sem relevância | Não sabe que "Bruno Mars" no título é mais relevante que na descrição |
-| Cache ineficaz | Cada variação de query é uma chave diferente no cache |
+| Sem stemming | "shows" não encontra "show", "música" ≠ "musica" |
+| Sem relevância | Não sabe que "Bruno Mars" no título pesa mais que na descrição |
+| Cache ineficaz | Cada variação de query é uma chave diferente |
 
 **O jeito certo: Elasticsearch como motor de busca dedicado**
 
 ```
-PostgreSQL (fonte de verdade)
-    │
-    │ CDC via WAL (Write-Ahead Logging)
-    ▼
-Debezium → Kafka → Search Service
-                       │
-                       ▼
-                Elasticsearch (índice otimizado para busca)
-                  • Inverted index (não B-tree)
-                  • Analisadores de linguagem
-                  • Scoring de relevância (BM25)
-                  • Fuzziness automático
-                  • Geo proximity
+event-service (PostgreSQL)
+       │ emite ao publicar/atualizar/cancelar
+       ▼
+Kafka topics:
+  events.event-published
+  events.event-updated
+  events.event-cancelled
+       │ consumer @EventPattern
+       ▼
+search-service ──► Elasticsearch
+                   • Inverted index (não B-tree)
+                   • Analisadores de linguagem (português)
+                   • Scoring de relevância (BM25)
+                   • Fuzziness automático
+                   • Autocomplete via edge_ngram
 ```
 
 ---
 
-## Tokenização e Stemming — Como o Elasticsearch "Entende" Texto
+## Por que **domain events** em vez de CDC com Debezium?
+
+> **Decisão consciente para o tutorial.** A versão didática deste capítulo usa os
+> mesmos `events.event-*` que já alimentam a réplica local em booking-service
+> (cap-06, Passo 6.11). Em produção real com volume muito alto, a evolução
+> natural é CDC com Debezium + **Outbox pattern**. Isso é tratado no cap-18
+> (Padrões Avançados) — aqui mantemos a coerência arquitetural com o resto do
+> sistema e evitamos uma dependência (Debezium) que apareceria em um único
+> lugar.
+
+| Critério | Domain events Kafka | CDC com Debezium |
+|---|---|---|
+| Acoplamento | Baixo — schema do evento é contrato explícito | Acoplado ao schema da tabela |
+| Denormalização (categoria, venue) | Trivial: emitter já faz JOIN | Exige Outbox pattern (tabela separada com snapshot) |
+| Latência | ~50–200ms (Kafka in-memory) | ~10–50ms (lê WAL direto) |
+| Stack para entender | NestJS + Kafka | NestJS + Kafka + Debezium + Connect + plugin pgoutput |
+| Captura DELETE silencioso | Não — depende do emitter chamar | Sim — qualquer DELETE no banco é capturado |
+
+**Quando trocar por CDC:** acima de ~10k eventos publicados/min, ou quando
+auditoria exigir capturar mudanças que não passam por código (manuais via SQL,
+migrations etc). Para o tutorial, domain events resolvem o problema sem
+introduzir complexidade fora do tópico.
+
+---
+
+## Tokenização e Stemming — Como o Elasticsearch "entende" texto
 
 ```
 Texto original: "Bruno Mars Live em São Paulo 2026"
@@ -61,138 +87,49 @@ Texto original: "Bruno Mars Live em São Paulo 2026"
 Após tokenização + lowercase + asciifolding:
   ["bruno", "mars", "live", "em", "sao", "paulo", "2026"]
 
-Após remoção de stopwords (palavras sem valor de busca):
+Após remoção de stopwords ("em", "de", "da", "com" etc):
   ["bruno", "mars", "live", "sao", "paulo", "2026"]
 
-Após stemming (redução à raiz morfológica):
-  Texto em inglês: "shows" → "show", "singing" → "sing"
-  Texto em PT-BR:  "cantores" → "cantor", "cantando" → "cantar"
-                   "casinha"  → "cas",    "casarão"  → "cas"
-                   "casebre"  → "cas"
+Após stemming português (redução à raiz morfológica):
+  "cantores"  → "cantor"
+  "cantando"  → "cantar"
+  "casinha"   → "cas"
+  "casarão"   → "cas"
+  "casebre"   → "cas"
 
 Resultado: buscar "casa" encontra "casinha", "casarão", "casebre"
-           porque todos compartilham a mesma raiz "cas"
 ```
 
 ```
-Fuzziness (tolerância a typos):
-  Busca: "Bruno Marz"  → encontra "Bruno Mars"   (1 caractere diferente)
-  Busca: "Methalica"   → encontra "Metallica"    (2 caracteres diferentes)
-  Busca: "Whinderson"  → encontra "Whindersson"  (1 caractere diferente)
+Fuzziness (tolerância a typos — Levenshtein Distance):
+  "Bruno Marz"  → encontra "Bruno Mars"   (1 edição)
+  "Methalica"   → encontra "Metallica"    (2 edições)
+  "Whinderson"  → encontra "Whindersson"  (1 edição)
 
-Algoritmo: Levenshtein Distance (número de edições para transformar uma palavra na outra)
-  fuzziness: AUTO → distância 0 para palavras ≤2 chars, 1 para ≤5, 2 para >5
-```
-
----
-
-## Por que CDC com Debezium?
-
-```
-SEM CDC (polling):
-  Search Service → SELECT * FROM events WHERE updated_at > ? (a cada 30s)
-  Problema: delay de até 30s, carga no banco, acoplamento direto ao DB
-
-COM CDC (Debezium):
-  PostgreSQL WAL → Debezium → Kafka → Search Service
-  Vantagens:
-  - Captura TODA mudança (INSERT, UPDATE, DELETE) em tempo real
-  - Sem carga adicional na aplicação
-  - Desacoplado: search-service não precisa conhecer o schema do event-service
-  - Replay: se o search-service cair, ele processa as mudanças ao voltar
-```
-
-### O que é o WAL (Write-Ahead Logging)?
-
-```
-PostgreSQL grava TODA mudança no WAL antes de aplicar no banco:
-
-  WAL entry: "foi criado o evento 10579"
-  WAL entry: "o nome do evento 211 mudou"
-  WAL entry: "o evento 4456 foi removido"
-  WAL entry: "o evento 554 foi atualizado"
-
-Debezium lê o WAL como se fosse um "replica" do PostgreSQL.
-Cada entrada vira uma mensagem no Kafka:
-
-  cdc.public.events → { op: 'c', after: { id: 10579, title: '...', ... } }
-  cdc.public.events → { op: 'u', before: { id: 211, title: 'Antigo' }, after: { id: 211, title: 'Novo' } }
-  cdc.public.events → { op: 'd', before: { id: 4456, title: '...' } }
-
-  op: 'c' = create, 'u' = update, 'r' = read/snapshot, 'd' = delete
-
-O Search Service consome essas mensagens e atualiza o índice do Elasticsearch
-sem nunca tocar diretamente no banco de dados do event-service.
+  fuzziness: AUTO →
+    distância 0 para palavras ≤ 2 chars
+    distância 1 para 3–5 chars
+    distância 2 para 6+ chars
 ```
 
 ---
 
-## Passo 8.1 — Configurar Debezium (docker-compose)
+## Passo 8.1 — Schema do índice (Elasticsearch mapping)
 
-```yaml
-# Adicionar ao docker-compose.yml
-
-debezium:
-  image: debezium/connect:3.0
-  restart: unless-stopped
-  environment:
-    BOOTSTRAP_SERVERS: kafka:9092
-    GROUP_ID: debezium-connect
-    CONFIG_STORAGE_TOPIC: debezium_configs
-    OFFSET_STORAGE_TOPIC: debezium_offsets
-    STATUS_STORAGE_TOPIC: debezium_statuses
-  ports:
-    - "8083:8083"
-  networks:
-    - data
-  depends_on:
-    kafka:
-      condition: service_healthy
-    postgres:
-      condition: service_healthy
-```
-
-```bash
-# Após subir o Debezium, registrar o conector PostgreSQL
-# Este conector monitora as tabelas de eventos e publica no Kafka
-
-curl -X POST http://localhost:8083/connectors \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "name": "showpass-events-connector",
-    "config": {
-      "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
-      "database.hostname": "postgres",
-      "database.port": "5432",
-      "database.user": "event_svc",
-      "database.password": "event_svc_dev",
-      "database.dbname": "showpass_events",
-      "table.include.list": "public.events,public.ticket_batches",
-      "topic.prefix": "cdc",
-      "plugin.name": "pgoutput",
-      "publication.name": "showpass_publication",
-      "slot.name": "showpass_slot",
-      "transforms": "unwrap",
-      "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
-      "transforms.unwrap.drop.tombstones": "false",
-      "transforms.unwrap.delete.handling.mode": "rewrite"
-    }
-  }'
-
-# Tópicos criados automaticamente:
-# cdc.public.events          ← cada INSERT/UPDATE/DELETE em events
-# cdc.public.ticket_batches  ← mudanças nos lotes de ingressos
-```
-
----
-
-## Passo 8.2 — Elasticsearch Index Mapping
+O mapping define **como cada campo é analisado**. Campos `text` passam por
+analyzer; campos `keyword` são indexados raw (filtros exatos, agregações).
 
 ```typescript
 // apps/search-service/src/modules/search/event-index.ts
 //
-// Define o mapping do índice de eventos no Elasticsearch.
-// O mapping controla como cada campo é analisado e indexado.
+// Mapping do índice "events".
+// Apenas campos QUE CHEGAM no payload do EventReplicatedEvent:
+//   id, organizerId, title, slug, status, startAt, endAt,
+//   venueCity, venueState, thumbnailUrl
+//
+// categoria/organizerName/venueName não estão no payload — para indexá-los,
+// o event-service precisa aumentar o EventReplicatedEvent (futuro) ou criar
+// uma projection table com snapshot denormalizado (cap-18 Outbox).
 
 export const EVENT_INDEX = 'events';
 
@@ -200,19 +137,16 @@ export const EVENT_INDEX_MAPPING = {
   settings: {
     analysis: {
       analyzer: {
-        // Analisador customizado para português brasileiro
-        // Reconhece acentos, stemming, stopwords do PT-BR
         portuguese_analyzer: {
           type: 'custom',
           tokenizer: 'standard',
           filter: [
             'lowercase',
             'asciifolding',        // remove acentos: "música" → "musica"
-            'portuguese_stop',     // remove stopwords: "de", "da", "com"
+            'portuguese_stop',     // remove stopwords PT-BR
             'portuguese_stemmer',  // reduz à raiz: "cantores" → "cantor"
           ],
         },
-        // Analisador para autocomplete (prefixo)
         autocomplete_analyzer: {
           type: 'custom',
           tokenizer: 'standard',
@@ -220,105 +154,124 @@ export const EVENT_INDEX_MAPPING = {
         },
       },
       filter: {
-        portuguese_stop: {
-          type: 'stop',
-          stopwords: '_portuguese_',
-        },
-        portuguese_stemmer: {
-          type: 'stemmer',
-          language: 'portuguese',
-        },
-        edge_ngram_filter: {
-          type: 'edge_ngram',
-          min_gram: 2,
-          max_gram: 20,
-        },
+        portuguese_stop:    { type: 'stop',      stopwords: '_portuguese_' },
+        portuguese_stemmer: { type: 'stemmer',   language: 'portuguese' },
+        edge_ngram_filter:  { type: 'edge_ngram', min_gram: 2, max_gram: 20 },
       },
     },
   },
   mappings: {
     properties: {
-      id: { type: 'keyword' },
+      id:          { type: 'keyword' },
+      organizerId: { type: 'keyword' },
       title: {
         type: 'text',
         analyzer: 'portuguese_analyzer',
-        // Campo adicional para autocomplete (sem stemming)
         fields: {
+          // Subcampo para autocomplete (sem stemming)
           autocomplete: {
             type: 'text',
             analyzer: 'autocomplete_analyzer',
             search_analyzer: 'standard',
           },
-          // Campo keyword para sorting e filtering exato
+          // Subcampo keyword para sort/aggregation exata
           keyword: { type: 'keyword' },
         },
       },
-      description: {
-        type: 'text',
-        analyzer: 'portuguese_analyzer',
-        // Não armazenar (economia de storage) — apenas para busca
-        store: false,
-      },
-      categorySlug: { type: 'keyword' },
-      categoryName: { type: 'text', analyzer: 'portuguese_analyzer' },
-      organizerName: { type: 'keyword' },
-      venueName: { type: 'text', analyzer: 'portuguese_analyzer' },
-      venueCity: { type: 'keyword' },
-      venueState: { type: 'keyword' },
-      status: { type: 'keyword' },
-      startAt: { type: 'date' },
-      endAt: { type: 'date' },
-      minPrice: { type: 'float' },
-      maxPrice: { type: 'float' },
-      availableTickets: { type: 'integer' },
-      thumbnailUrl: { type: 'keyword', index: false },  // não indexar URLs
-
-      // Campo geo_point para buscas por proximidade
-      // Formato: { lat: -23.5, lon: -46.6 }
-      location: { type: 'geo_point' },
+      slug:         { type: 'keyword' },
+      status:       { type: 'keyword' },
+      startAt:      { type: 'date' },
+      endAt:        { type: 'date' },
+      venueCity:    { type: 'keyword' },  // filtro exato; case-sensitive (normalizar no emit)
+      venueState:   { type: 'keyword' },
+      thumbnailUrl: { type: 'keyword', index: false }, // não indexar URLs
     },
   },
-};
+} as const;
+```
+
+> **Nota sobre geo:** o capítulo 5 do tutorial não inclui `latitude/longitude`
+> no schema de Event. Para habilitar busca por proximidade (`geo_distance`),
+> primeiro adicione esses campos em `event-service/prisma/schema.prisma`,
+> propague no `EventReplicatedEvent`, e só então acrescente
+> `location: { type: 'geo_point' }` aqui. Manter o capítulo focado no que já
+> existe.
+
+---
+
+## Passo 8.2 — `IndexBootstrapService` (cria o índice no startup)
+
+O índice precisa existir antes do consumer começar a indexar. Usar
+`indices.exists` + `create` com `ignore: 400` mantém o boot idempotente
+(múltiplos pods sobem em paralelo e só um cria de fato).
+
+```typescript
+// apps/search-service/src/modules/search/index-bootstrap.service.ts
+
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { ElasticsearchService } from '@nestjs/elasticsearch';
+import { EVENT_INDEX, EVENT_INDEX_MAPPING } from './event-index.js';
+
+@Injectable()
+export class IndexBootstrapService implements OnApplicationBootstrap {
+  private readonly logger = new Logger(IndexBootstrapService.name);
+
+  constructor(private readonly es: ElasticsearchService) {}
+
+  async onApplicationBootstrap(): Promise<void> {
+    const exists = await this.es.indices.exists({ index: EVENT_INDEX });
+    if (exists) {
+      this.logger.log(`Índice "${EVENT_INDEX}" já existe`);
+      return;
+    }
+
+    // Criar com mapping. Em produção, aliases + reindex zero-downtime
+    // (ver runbooks/elasticsearch-reindex.md).
+    await this.es.indices.create({
+      index: EVENT_INDEX,
+      ...EVENT_INDEX_MAPPING,
+    });
+
+    this.logger.log(`Índice "${EVENT_INDEX}" criado com mapping`);
+  }
+}
 ```
 
 ---
 
-## Passo 8.3 — Search Service
+## Passo 8.3 — `SearchService` (query DSL)
+
+A peça central. Constrói uma query `bool { must, filter }` — `must` afeta
+score (relevância), `filter` não (cacheável).
 
 ```typescript
 // apps/search-service/src/modules/search/search.service.ts
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ElasticsearchService } from '@nestjs/elasticsearch';
-import type { SearchResponse } from '@elastic/elasticsearch/lib/api/types';
+import type { SearchResponse } from '@elastic/elasticsearch/lib/api/types.js';
 import { EVENT_INDEX } from './event-index.js';
 
 export interface SearchEventsParams {
-  q?: string;          // texto livre
+  q?: string;
   city?: string;
   state?: string;
-  categorySlug?: string;
-  minPrice?: number;
-  maxPrice?: number;
   startAfter?: Date;
   startBefore?: Date;
-  lat?: number;        // para busca geográfica
-  lon?: number;
-  radiusKm?: number;
   page?: number;
   limit?: number;
 }
 
 export interface EventDocument {
   id: string;
+  organizerId: string;
   title: string;
-  categorySlug: string;
-  venueName: string;
+  slug: string;
+  status: string;
+  startAt: string;
+  endAt: string;
   venueCity: string;
   venueState: string;
-  startAt: string;
-  minPrice: number;
-  availableTickets: number;
   thumbnailUrl: string | null;
 }
 
@@ -338,140 +291,81 @@ export class SearchService {
     const limit = Math.min(params.limit ?? 20, 100);
     const from = (page - 1) * limit;
 
-    // ─── Construir a query ────────────────────────────────────────────────────
-    const query: Record<string, unknown> = {
-      bool: {
-        must: [],
-        filter: [],
-      },
-    };
-
     const mustClauses: unknown[] = [];
     const filterClauses: unknown[] = [];
 
-    // ─── Busca textual com multi_match ────────────────────────────────────────
+    // ─── Busca textual (multi_match com pesos) ──────────────────────────────
     if (params.q) {
       mustClauses.push({
         multi_match: {
           query: params.q,
           fields: [
-            'title^3',               // título tem peso 3x maior
+            'title^3',               // título com peso 3x
             'title.autocomplete^2',  // autocomplete com peso 2x
-            'description',
-            'venueName',
-            'organizerName',
+            'slug',
           ],
-          // fuzziness: AUTO = 1 erro p/ 3-5 chars, 2 erros p/ 6+ chars
-          // "Bruno Marz" encontra "Bruno Mars"
           fuzziness: 'AUTO',
-          prefix_length: 2,          // primeiras 2 letras devem estar corretas
-          operator: 'and',           // todos os termos devem existir
+          prefix_length: 2,  // primeiras 2 letras devem estar corretas
+          operator: 'and',   // todos os termos precisam aparecer
         },
       });
     }
 
-    // ─── Filtros exatos ────────────────────────────────────────────────────────
-    if (params.city) {
-      filterClauses.push({ term: { venueCity: params.city } });
-    }
+    // ─── Filtros exatos (não afetam score, são cacheados pelo ES) ──────────
+    if (params.city)  filterClauses.push({ term: { venueCity:  params.city  } });
+    if (params.state) filterClauses.push({ term: { venueState: params.state } });
 
-    if (params.state) {
-      filterClauses.push({ term: { venueState: params.state } });
-    }
-
-    if (params.categorySlug) {
-      filterClauses.push({ term: { categorySlug: params.categorySlug } });
-    }
-
-    // Apenas eventos disponíveis para venda
+    // Apenas eventos em venda
     filterClauses.push({ term: { status: 'on_sale' } });
 
-    // Apenas eventos futuros
-    filterClauses.push({
-      range: { startAt: { gte: new Date().toISOString() } },
-    });
+    // Apenas eventos futuros (sempre — exclui eventos já encerrados)
+    const dateRange: Record<string, string> = { gte: new Date().toISOString() };
+    if (params.startAfter)  dateRange.gte = params.startAfter.toISOString();
+    if (params.startBefore) dateRange.lte = params.startBefore.toISOString();
+    filterClauses.push({ range: { startAt: dateRange } });
 
-    // ─── Filtro de preço ──────────────────────────────────────────────────────
-    if (params.minPrice !== undefined || params.maxPrice !== undefined) {
-      filterClauses.push({
-        range: {
-          minPrice: {
-            ...(params.minPrice !== undefined ? { gte: params.minPrice } : {}),
-            ...(params.maxPrice !== undefined ? { lte: params.maxPrice } : {}),
-          },
-        },
-      });
-    }
-
-    // ─── Filtro geográfico ────────────────────────────────────────────────────
-    if (params.lat !== undefined && params.lon !== undefined) {
-      const radius = params.radiusKm ?? 50;
-      filterClauses.push({
-        geo_distance: {
-          distance: `${radius}km`,
-          location: { lat: params.lat, lon: params.lon },
-        },
-      });
-    }
-
-    // Filtro de data
-    if (params.startAfter || params.startBefore) {
-      filterClauses.push({
-        range: {
-          startAt: {
-            ...(params.startAfter ? { gte: params.startAfter.toISOString() } : {}),
-            ...(params.startBefore ? { lte: params.startBefore.toISOString() } : {}),
-          },
-        },
-      });
-    }
-
-    (query.bool as Record<string, unknown>).must = mustClauses;
-    (query.bool as Record<string, unknown>).filter = filterClauses;
-
-    // ─── Executar busca ───────────────────────────────────────────────────────
-    const response = await this.es.search<EventDocument>({
+    // ─── Executar busca ─────────────────────────────────────────────────────
+    const response = (await this.es.search<EventDocument>({
       index: EVENT_INDEX,
       from,
       size: limit,
-      query,
+      query: { bool: { must: mustClauses, filter: filterClauses } },
+      // Com q: ordena por relevância. Sem q: ordena por data (cronológico).
       sort: params.q
-        ? [{ _score: 'desc' }, { startAt: 'asc' }]  // relevância primeiro
-        : [{ startAt: 'asc' }],                       // sem texto: ordem cronológica
-      _source: [
-        'id', 'title', 'categorySlug', 'venueName',
-        'venueCity', 'venueState', 'startAt', 'minPrice',
-        'availableTickets', 'thumbnailUrl',
-      ],
-    });
+        ? [{ _score: 'desc' }, { startAt: 'asc' }]
+        : [{ startAt: 'asc' }],
+    })) as SearchResponse<EventDocument>;
 
-    const hits = (response as SearchResponse<EventDocument>).hits;
-    const total = typeof hits.total === 'number' ? hits.total : hits.total?.value ?? 0;
+    const total =
+      typeof response.hits.total === 'number'
+        ? response.hits.total
+        : response.hits.total?.value ?? 0;
 
     return {
-      hits: hits.hits.map((h) => h._source as EventDocument),
+      hits: response.hits.hits.map((h) => h._source as EventDocument),
       total,
       page,
       limit,
     };
   }
 
+  /**
+   * Sugestões para a barra de busca (digite "ro" → "Rock in Rio").
+   * Usa o subcampo title.autocomplete (edge_ngram).
+   */
   async autocomplete(q: string): Promise<string[]> {
-    const response = await this.es.search<EventDocument>({
+    const response = (await this.es.search<EventDocument>({
       index: EVENT_INDEX,
       size: 5,
       query: {
         match: {
-          'title.autocomplete': {
-            query: q,
-            operator: 'and',
-          },
+          'title.autocomplete': { query: q, operator: 'and' },
         },
       },
       _source: ['title'],
-    });
+    })) as SearchResponse<EventDocument>;
 
-    return (response as SearchResponse<EventDocument>).hits.hits
+    return response.hits.hits
       .map((h) => h._source?.title ?? '')
       .filter(Boolean);
   }
@@ -480,170 +374,140 @@ export class SearchService {
 
 ---
 
-## Passo 8.4 — Kafka Consumer (CDC Indexer)
+## Passo 8.4 — `EventIndexer` (consumer Kafka)
+
+Consome os mesmos `events.event-*` que o booking-service consome. Padrão
+idêntico aos demais consumers do projeto: Zod safe-parse + idempotência via
+`es.index({ id })` (mesmo id = update, sem PK violation).
 
 ```typescript
-// apps/search-service/src/modules/indexer/event-indexer.service.ts
+// apps/search-service/src/modules/indexer/event-indexer.controller.ts
 //
-// Consome eventos CDC do Debezium e indexa/remove do Elasticsearch.
-// O padrão @EventPattern do NestJS registra o consumer automaticamente.
+// Consome events.event-* e mantém o índice "events" sincronizado.
+// at-least-once do Kafka: usar es.index() com mesmo id é idempotente.
 
 import { Controller, Logger } from '@nestjs/common';
 import { EventPattern, Payload } from '@nestjs/microservices';
 import { ElasticsearchService } from '@nestjs/elasticsearch';
-import { KAFKA_TOPICS } from '@showpass/types';
+import { KAFKA_TOPICS, EventReplicatedEventSchema } from '@showpass/types';
 import { EVENT_INDEX } from '../search/event-index.js';
-
-interface CdcEventPayload {
-  op: 'c' | 'u' | 'd' | 'r';  // create, update, delete, read (snapshot)
-  after: Record<string, unknown> | null;
-  before: Record<string, unknown> | null;
-}
+import { z } from 'zod';
 
 @Controller()
-export class EventIndexerService {
-  private readonly logger = new Logger(EventIndexerService.name);
+export class EventIndexerController {
+  private readonly logger = new Logger(EventIndexerController.name);
 
   constructor(private readonly es: ElasticsearchService) {}
 
-  /**
-   * Processa eventos CDC do Debezium (tabela events).
-   * Chamado automaticamente pelo @EventPattern quando mensagem chega no tópico.
-   */
-  @EventPattern('cdc.public.events')
-  async handleEventCdc(@Payload() payload: CdcEventPayload): Promise<void> {
-    try {
-      switch (payload.op) {
-        case 'c':  // INSERT
-        case 'u':  // UPDATE
-        case 'r':  // Snapshot inicial (Debezium lê tabela existente ao conectar)
-          if (payload.after) {
-            await this.indexEvent(payload.after);
-          }
-          break;
-
-        case 'd':  // DELETE
-          if (payload.before) {
-            await this.removeEvent(payload.before.id as string);
-          }
-          break;
-      }
-    } catch (error) {
-      this.logger.error('Erro ao indexar evento CDC', {
-        error: (error as Error).message,
-        op: payload.op,
-      });
-      // Re-throw para o Kafka recolocar na fila (retry automático)
-      throw error;
-    }
-  }
-
-  /**
-   * Escuta eventos de domínio publicados pelo event-service.
-   * Útil para mudanças de status que o CDC pode demorar a propagar.
-   */
   @EventPattern(KAFKA_TOPICS.EVENT_PUBLISHED)
-  async handleEventPublished(@Payload() payload: { eventId: string }): Promise<void> {
-    // Buscar dados atualizados do event-service e re-indexar
-    await this.reindexFromSource(payload.eventId);
+  async onPublished(@Payload() raw: unknown): Promise<void> {
+    return this.upsert(raw, 'EVENT_PUBLISHED');
   }
 
+  @EventPattern(KAFKA_TOPICS.EVENT_UPDATED)
+  async onUpdated(@Payload() raw: unknown): Promise<void> {
+    return this.upsert(raw, 'EVENT_UPDATED');
+  }
+
+  /**
+   * EVENT_CANCELLED tem payload diferente: { eventId, organizerId }.
+   * É emitido em events.service.ts:transitionStatus quando status='cancelled'.
+   */
   @EventPattern(KAFKA_TOPICS.EVENT_CANCELLED)
-  async handleEventCancelled(@Payload() payload: { eventId: string }): Promise<void> {
-    // Remover do índice de busca — evento cancelado não aparece mais
-    await this.removeEvent(payload.eventId);
+  async onCancelled(@Payload() raw: unknown): Promise<void> {
+    const parsed = z
+      .object({ eventId: z.uuid(), organizerId: z.uuid() })
+      .safeParse(raw);
+    if (!parsed.success) {
+      this.logger.warn('EVENT_CANCELLED inválido', { issues: parsed.error.issues });
+      return;
+    }
+    await this.removeFromIndex(parsed.data.eventId);
   }
 
-  private async indexEvent(eventData: Record<string, unknown>): Promise<void> {
-    // Apenas indexar eventos publicados ou em venda
-    const indexableStatuses = ['published', 'on_sale', 'sold_out'];
-    if (!indexableStatuses.includes(eventData.status as string)) {
-      // Se o evento estava indexado mas mudou para draft/cancelled, remover
-      await this.removeEvent(eventData.id as string);
+  // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  private async upsert(raw: unknown, topic: string): Promise<void> {
+    const parsed = EventReplicatedEventSchema.safeParse(raw);
+    if (!parsed.success) {
+      this.logger.error(`Payload inválido em ${topic}`, {
+        issues: parsed.error.issues,
+      });
+      // Não relançar: nack infinito bloqueia a partição. Em prod: DLQ.
       return;
     }
 
-    const document = this.transformToDocument(eventData);
+    const e = parsed.data;
+
+    // Só indexar status visíveis ao buyer; outros são removidos do índice.
+    const indexable = ['published', 'on_sale', 'sold_out'];
+    if (!indexable.includes(e.status)) {
+      await this.removeFromIndex(e.id);
+      return;
+    }
 
     await this.es.index({
       index: EVENT_INDEX,
-      id: document.id,
-      document,
+      id: e.id,
+      document: {
+        id: e.id,
+        organizerId: e.organizerId,
+        title: e.title,
+        slug: e.slug,
+        status: e.status,
+        startAt: e.startAt,
+        endAt: e.endAt,
+        venueCity: e.venueCity,
+        venueState: e.venueState,
+        thumbnailUrl: e.thumbnailUrl,
+      },
+      // refresh: 'wait_for' garante read-your-write para o caller — útil em
+      // testes E2E. Em prod com volume alto, omitir (default 'false') para
+      // throughput.
+      refresh: process.env['NODE_ENV'] === 'production' ? false : 'wait_for',
     });
 
-    this.logger.debug(`Evento indexado: ${document.id}`);
+    this.logger.log(`Indexado: ${e.id} ("${e.title}")`);
   }
 
-  private async removeEvent(eventId: string): Promise<void> {
+  private async removeFromIndex(eventId: string): Promise<void> {
     try {
       await this.es.delete({ index: EVENT_INDEX, id: eventId });
-      this.logger.debug(`Evento removido do índice: ${eventId}`);
-    } catch (error) {
-      // Ignorar 404 — evento pode não estar no índice (idempotente)
-      if ((error as { statusCode?: number }).statusCode !== 404) {
-        throw error;
+      this.logger.log(`Removido do índice: ${eventId}`);
+    } catch (err) {
+      // 404 é benigno: evento pode nunca ter sido indexado (ex: cancelado
+      // antes de chegar a 'published'). Outros erros são relançados.
+      if ((err as { meta?: { statusCode?: number } }).meta?.statusCode !== 404) {
+        throw err;
       }
     }
-  }
-
-  private transformToDocument(data: Record<string, unknown>): Record<string, unknown> {
-    return {
-      id: data.id,
-      title: data.title,
-      description: data.description,
-      status: data.status,
-      categorySlug: data.category_slug,
-      categoryName: data.category_name,
-      organizerName: data.organizer_name,
-      venueName: data.venue_name,
-      venueCity: data.venue_city,
-      venueState: data.venue_state,
-      startAt: data.start_at,
-      endAt: data.end_at,
-      minPrice: data.min_price,
-      availableTickets: data.available_tickets,
-      thumbnailUrl: data.thumbnail_url ?? null,
-      // geo_point: Elasticsearch espera { lat, lon }
-      location: data.latitude && data.longitude
-        ? { lat: Number(data.latitude), lon: Number(data.longitude) }
-        : null,
-    };
-  }
-
-  private async reindexFromSource(eventId: string): Promise<void> {
-    const url = `${process.env.EVENT_SERVICE_URL}/events/${eventId}`;
-    const res = await fetch(url);
-    if (!res.ok) return;
-    const data = await res.json() as Record<string, unknown>;
-    await this.indexEvent(data);
   }
 }
 ```
 
 ---
 
-## Passo 8.5 — Search Controller
+## Passo 8.5 — `SearchController` (rotas públicas)
+
+Sem `OrganizerGuard`/`BuyerGuard` — busca é pública. Validação Zod cobre
+sanitização (OWASP A03).
 
 ```typescript
 // apps/search-service/src/modules/search/search.controller.ts
 
 import { Controller, Get, Query } from '@nestjs/common';
-import { SearchService } from './search.service.js';
 import { z } from 'zod';
+import { SearchService } from './search.service.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 
 const SearchQuerySchema = z.object({
-  q: z.string().optional(),
-  city: z.string().optional(),
-  state: z.string().length(2).optional(),
-  category: z.string().optional(),
-  minPrice: z.coerce.number().nonnegative().optional(),
-  maxPrice: z.coerce.number().nonnegative().optional(),
-  lat: z.coerce.number().min(-90).max(90).optional(),
-  lon: z.coerce.number().min(-180).max(180).optional(),
-  radius: z.coerce.number().positive().max(500).default(50),
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
+  q:           z.string().min(1).optional(),
+  city:        z.string().optional(),
+  state:       z.string().length(2).optional(),
+  startAfter:  z.coerce.date().optional(),
+  startBefore: z.coerce.date().optional(),
+  page:        z.coerce.number().int().min(1).default(1),
+  limit:       z.coerce.number().int().min(1).max(100).default(20),
 });
 
 type SearchQuery = z.infer<typeof SearchQuerySchema>;
@@ -653,38 +517,166 @@ export class SearchController {
   constructor(private readonly searchService: SearchService) {}
 
   /**
-   * Busca de eventos — rota pública.
-   * Ex: GET /search/events?q=Bruno+Mars&city=São Paulo&page=1
+   * Busca de eventos.
+   * GET /search/events?q=Bruno+Mars&city=São%20Paulo&page=1
    */
   @Get('events')
-  search(
-    @Query(new ZodValidationPipe(SearchQuerySchema)) query: SearchQuery,
-  ) {
+  search(@Query(new ZodValidationPipe(SearchQuerySchema)) query: SearchQuery) {
     return this.searchService.searchEvents({
-      q: query.q,
-      city: query.city,
-      state: query.state,
-      categorySlug: query.category,
-      minPrice: query.minPrice,
-      maxPrice: query.maxPrice,
-      lat: query.lat,
-      lon: query.lon,
-      radiusKm: query.radius,
-      page: query.page,
+      ...(query.q          !== undefined ? { q:           query.q          } : {}),
+      ...(query.city       !== undefined ? { city:        query.city       } : {}),
+      ...(query.state      !== undefined ? { state:       query.state      } : {}),
+      ...(query.startAfter !== undefined ? { startAfter:  query.startAfter } : {}),
+      ...(query.startBefore!== undefined ? { startBefore: query.startBefore} : {}),
+      page:  query.page,
       limit: query.limit,
     });
   }
 
   /**
-   * Autocomplete para a barra de busca.
-   * Ex: GET /search/autocomplete?q=Brun
-   * Retorna: ["Bruno Mars", "Bruno e Marrone", ...]
+   * Sugestões enquanto o usuário digita.
+   * GET /search/autocomplete?q=ro → ["Rock in Rio 2025", ...]
    */
   @Get('autocomplete')
-  autocomplete(@Query('q') q: string) {
+  async autocomplete(@Query('q') q: string): Promise<{ suggestions: string[] }> {
     if (!q || q.length < 2) return { suggestions: [] };
-    return this.searchService.autocomplete(q).then((s) => ({ suggestions: s }));
+    const suggestions = await this.searchService.autocomplete(q);
+    return { suggestions };
   }
+}
+```
+
+---
+
+## Passo 8.6 — `main.ts` híbrido (HTTP + Kafka)
+
+Mesmo padrão do payment-service (cap-07): HTTP para `/search/*` + microservice
+Kafka para os consumers.
+
+```typescript
+// apps/search-service/src/main.ts
+
+import 'dotenv/config';
+import 'reflect-metadata';
+
+import { NestFactory } from '@nestjs/core';
+import { Transport } from '@nestjs/microservices';
+import type { MicroserviceOptions } from '@nestjs/microservices';
+import { AppModule } from './app.module.js';
+
+async function bootstrap(): Promise<void> {
+  const app = await NestFactory.create(AppModule);
+
+  app.connectMicroservice<MicroserviceOptions>({
+    transport: Transport.KAFKA,
+    options: {
+      client: {
+        clientId: process.env['KAFKA_CLIENT_ID'] ?? 'search-service',
+        brokers: (process.env['KAFKA_BROKERS'] ?? 'localhost:29092').split(','),
+      },
+      consumer: {
+        groupId:
+          process.env['KAFKA_CONSUMER_GROUP_ID'] ?? 'search-service-consumer',
+        allowAutoTopicCreation: false,
+      },
+    },
+  });
+
+  await app.startAllMicroservices();
+  await app.listen(process.env['PORT'] ?? 3005);
+}
+
+void bootstrap();
+```
+
+---
+
+## Passo 8.7 — `AppModule`, `.env` e Makefile
+
+```typescript
+// apps/search-service/src/app.module.ts
+
+import { Module } from '@nestjs/common';
+import { ElasticsearchModule } from '@nestjs/elasticsearch';
+import { KafkaModule } from '@showpass/kafka';
+
+import { HealthModule } from './modules/health/health.module.js';
+import { SearchController } from './modules/search/search.controller.js';
+import { SearchService } from './modules/search/search.service.js';
+import { IndexBootstrapService } from './modules/search/index-bootstrap.service.js';
+import { EventIndexerController } from './modules/indexer/event-indexer.controller.js';
+
+@Module({
+  imports: [
+    ElasticsearchModule.register({
+      node: process.env['ELASTICSEARCH_NODE'] ?? 'http://localhost:9200',
+      // Em prod: TLS + auth básica via env (ELASTICSEARCH_USERNAME/PASSWORD)
+    }),
+    KafkaModule.forRoot({
+      clientId: process.env['KAFKA_CLIENT_ID'] ?? 'search-service',
+      brokers: (process.env['KAFKA_BROKERS'] ?? 'localhost:29092').split(','),
+      groupId:
+        process.env['KAFKA_GROUP_ID'] ?? 'search-service-group',
+    }),
+    HealthModule,
+  ],
+  controllers: [SearchController, EventIndexerController],
+  providers: [SearchService, IndexBootstrapService],
+})
+// eslint-disable-next-line @typescript-eslint/no-extraneous-class -- padrão NestJS
+export class AppModule {}
+```
+
+```bash
+# apps/search-service/.env.example
+
+NODE_ENV=development
+PORT=3005
+SERVICE_NAME=search-service
+
+ELASTICSEARCH_NODE=http://localhost:9200
+
+KAFKA_BROKERS=localhost:29092
+KAFKA_CLIENT_ID=search-service
+KAFKA_GROUP_ID=search-service-group
+KAFKA_CONSUMER_GROUP_ID=search-service-consumer
+```
+
+E o `Makefile` ganha o serviço no `dev-services` (mesma estratégia dos
+capítulos anteriores — ver cap-01 em "Como adicionar um novo microsserviço ao
+`dev-services`").
+
+---
+
+## Backfill — indexar eventos pré-existentes
+
+Domain events só são emitidos a partir do momento em que o search-service sobe.
+Eventos publicados **antes** disso ficam fora do índice. Solução: **endpoint
+administrativo no event-service** que reemite `EVENT_PUBLISHED` para todos
+eventos em status indexável, e o search-service consome normalmente.
+
+```typescript
+// apps/event-service/src/modules/events/events.controller.ts (trecho novo)
+//
+// POST /events/admin/reindex — reemite EVENT_PUBLISHED para todos os eventos
+// em status indexável. Idempotente: o consumer faz upsert por id.
+//
+// Proteção: require admin role (não implementado neste capítulo —
+// usar OrganizerGuard com role check, ou guard dedicado AdminGuard).
+
+@Post('admin/reindex')
+@UseGuards(OrganizerGuard) // TODO: AdminGuard quando existir
+async reindex(): Promise<{ reemitted: number }> {
+  const events = await this.eventsRepo.findIndexable(); // status in (...)
+  for (const e of events) {
+    await this.kafka.emit(KAFKA_TOPICS.EVENT_PUBLISHED, {
+      id: e.id, organizerId: e.organizerId, title: e.title, slug: e.slug,
+      status: e.status, startAt: e.startAt, endAt: e.endAt,
+      venueCity: e.venueCity, venueState: e.venueState,
+      thumbnailUrl: e.thumbnailUrl,
+    }, e.id);
+  }
+  return { reemitted: events.length };
 }
 ```
 
@@ -692,137 +684,145 @@ export class SearchController {
 
 ## Testando na prática
 
-O search-service indexa dados via Kafka (CDC com Debezium). Você pode testar a busca diretamente no Elasticsearch **e** pelo search-service HTTP.
-
 ### O que precisa estar rodando
 
 ```bash
-# Terminal 1 — infraestrutura completa (inclui Elasticsearch + Debezium)
+# Terminal 1 — infraestrutura (Postgres + Kafka + Elasticsearch)
 docker compose up -d
+# Aguardar Elasticsearch inicializar
+curl -s http://localhost:9200/_cluster/health | jq .status   # "yellow" ou "green"
 
-# Aguardar Elasticsearch inicializar (~30s)
-curl -s http://localhost:9200/_cluster/health | jq .status
-# Aguardar retornar "yellow" ou "green"
-
-# Terminal 2 — auth-service
-pnpm --filter @showpass/auth-service run dev
-
-# Terminal 3 — event-service
-pnpm --filter @showpass/event-service run dev
-
-# Terminal 4 — search-service
-pnpm --filter @showpass/search-service run dev        # porta 3005
+# Terminal 2 — serviços (auth + event + search)
+make dev-services        # adicione search-service ao scripts/dev.sh
+make dev-status          # confirme bolinhas verdes
 ```
-
-O Debezium começa a capturar mudanças do PostgreSQL automaticamente após subir.
 
 ### Passo a passo
 
-**1. Verificar que o Elasticsearch está operacional**
-
-```bash
-curl -s http://localhost:9200 | jq '{name, version: .version.number, status: .tagline}'
-```
-
-**2. Verificar que o índice `events` foi criado**
+**1. Verificar que o índice foi criado no boot do search-service**
 
 ```bash
 curl -s http://localhost:9200/events | jq '.events.mappings.properties | keys'
+# ["endAt","id","organizerId","slug","startAt","status","thumbnailUrl","title","venueCity","venueState"]
 ```
 
-Você verá os campos: `title`, `description`, `venueCity`, `location`, `startsAt`, etc.
-
-**3. Busca por texto livre**
+**2. Criar e publicar um evento (event-service)**
 
 ```bash
-curl -s "http://localhost:3005/search?q=rock" | jq .
+ORGANIZER_TOKEN=$(curl -s -X POST http://localhost:3000/auth/organizers/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"organizador@ex.com","password":"Senha@123"}' | jq -r .accessToken)
+
+EVENT_ID=$(curl -s -X POST http://localhost:3000/events \
+  -H "Authorization: Bearer $ORGANIZER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Rock in Rio 2026","startAt":"2026-09-26T18:00:00Z","endAt":"2026-09-30T23:00:00Z"}' \
+  | jq -r .id)
+
+# Transição draft → published → on_sale (cap-05 explica a state machine)
+curl -s -X PATCH http://localhost:3000/events/$EVENT_ID/status \
+  -H "Authorization: Bearer $ORGANIZER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"on_sale"}' | jq .status
+# "on_sale" → event-service emite events.event-published no Kafka
 ```
 
-Resposta esperada:
+**3. Buscar — texto livre**
 
-```json
-{
-  "total": 1,
-  "hits": [
-    {
-      "id": "018e9999-...",
-      "title": "Rock in Rio 2025",
-      "venueCity": "Rio de Janeiro",
-      "startsAt": "2025-09-26T18:00:00Z",
-      "status": "on_sale"
-    }
-  ]
-}
+```bash
+sleep 2  # aguardar consumer indexar
+curl -s 'http://localhost:3005/search/events?q=rock' | jq '.total, .hits[0].title'
+# 1
+# "Rock in Rio 2026"
 ```
 
 **4. Busca com typo (fuzziness)**
 
 ```bash
-# "rok" → encontra "Rock" (1 caractere diferente)
-curl -s "http://localhost:3005/search?q=rok+in+rio" | jq '.total'
+# "rok" tem 1 edição para "Rock" → AUTO tolera
+curl -s 'http://localhost:3005/search/events?q=rok+in+rio' | jq .total
+# 1
 ```
 
-Resposta esperada: `1` — o analisador português com `fuzziness: AUTO` tolera erros de digitação.
-
-**5. Busca por cidade**
+**5. Filtro por estado**
 
 ```bash
-curl -s "http://localhost:3005/search?q=rock&city=Rio+de+Janeiro" | jq '.hits[0].venueCity'
+curl -s 'http://localhost:3005/search/events?q=rock&state=RJ' | jq .total
 ```
 
-**6. Busca geográfica por proximidade**
+**6. Autocomplete**
 
 ```bash
-# Eventos em até 50km do Cristo Redentor (lat -22.951916, lon -43.210487)
-curl -s "http://localhost:3005/search?q=rock&lat=-22.951916&lon=-43.210487&radius=50km" | jq .
+curl -s 'http://localhost:3005/search/autocomplete?q=ro' | jq .suggestions
+# ["Rock in Rio 2026"]
 ```
 
-**7. Autocomplete (enquanto digita)**
+**7. Cancelar evento — sai do índice**
 
 ```bash
-curl -s "http://localhost:3005/search/autocomplete?q=ro" | jq .
-```
-
-Resposta esperada: sugestões como `["Rock in Rio 2025", "Rock Nacional..."]`.
-
-**8. Verificar CDC em tempo real**
-
-Crie um novo evento via event-service e veja aparecer na busca em ~2 segundos:
-
-```bash
-# Criar evento
-curl -s -X POST http://localhost:3003/events \
+curl -s -X PATCH http://localhost:3000/events/$EVENT_ID/status \
   -H "Authorization: Bearer $ORGANIZER_TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"title\":\"Lollapalooza Brasil 2025\",\"slug\":\"lolla-2025\",\"description\":\"Festival\",\"categoryId\":\"$CATEGORY_ID\",\"venueId\":\"$VENUE_ID\",\"startsAt\":\"2025-03-28T18:00:00Z\",\"endsAt\":\"2025-03-30T23:00:00Z\",\"currency\":\"BRL\",\"maxTicketsPerOrder\":4}" | jq .id
+  -d '{"status":"cancelled"}'
 
-sleep 3
-
-# Buscar o novo evento
-curl -s "http://localhost:3005/search?q=lollapalooza" | jq '.total'
+sleep 1
+curl -s 'http://localhost:3005/search/events?q=rock' | jq .total
+# 0 — consumer recebeu EVENT_CANCELLED e fez delete
 ```
 
-Resposta esperada: `1` — o Debezium capturou o INSERT no PostgreSQL, o Kafka consumer indexou no Elasticsearch.
-
-**9. Verificar conectores Debezium**
+**8. Inspecionar o documento direto no Elasticsearch (debug)**
 
 ```bash
-curl -s http://localhost:8083/connectors | jq .
-curl -s http://localhost:8083/connectors/events-connector/status | jq .connector.state
+curl -s "http://localhost:9200/events/_doc/$EVENT_ID" | jq ._source
 ```
 
-Estado esperado: `"RUNNING"`.
+---
+
+## Pegadinhas comuns
+
+| Sintoma | Causa | Correção |
+|---|---|---|
+| Índice "events" não existe ao buscar | `IndexBootstrapService` não rodou (boot do app falhou) | Conferir log do bootstrap; ES está saudável (`/_cluster/health`)? |
+| Busca retorna 0 mesmo após publicar | Consumer não recebeu o evento; ou `refresh: false` em prod e a leitura veio rápido demais | Conferir log do `EventIndexerController`; em test/dev usar `refresh: 'wait_for'` |
+| `[parsing_exception] failed to parse field [startAt]` | Payload chegou com data em formato inesperado | `EventReplicatedEventSchema` usa `z.coerce.date()` — verificar emitter |
+| `multi_match` ignora typos | `prefix_length: 2` exige as 2 primeiras letras corretas | Reduzir `prefix_length` para 0 (mais permissivo, mais ruído) |
+| Alta latência com `refresh: 'wait_for'` em prod | Cada doc força refresh do shard | Não usar em prod — aceitar ~1s de delay para read-after-write |
+
+---
+
+## Próximos passos (fora do escopo deste capítulo)
+
+1. **Geo search** — adicionar `latitude/longitude` em Event; propagar no
+   `EventReplicatedEvent`; mapping `location: geo_point`; filtro
+   `geo_distance` no `searchEvents`.
+2. **Indexação denormalizada** (categoria, venue, organizer) — exige Outbox
+   table no event-service; ver cap-18.
+3. **Reindex zero-downtime** — alias + reindex; ver `runbooks/elasticsearch-reindex.md`.
+4. **Highlight de matches** — `highlight: { fields: { title: {} } }` para
+   destacar termos buscados na resposta.
+5. **Aggregations** (filtros laterais) — facets de cidade, faixa de preço etc.
+6. **CDC com Debezium** — quando volume justificar; ver cap-18.
 
 ---
 
 ## Recapitulando
 
-1. **CDC com Debezium** — captura mudanças do PostgreSQL em tempo real sem polling; busca sempre atualizada
-2. **Index mapping customizado** — analisador português com stemming e remoção de acentos; "musica" encontra "música"
-3. **multi_match com fuzziness** — tolerante a erros de digitação; `AUTO` calibra o número de erros aceitos
-4. **geo_distance filter** — eventos próximos ao usuário com raio configurável
-5. **Autocomplete com edge_ngram** — sugestões enquanto o usuário digita
-6. **Kafka consumer idempotente** — se o evento for reprocessado, `es.index()` com mesmo ID apenas atualiza
+1. **Domain events Kafka** sincronizam Elasticsearch — mesmo padrão dos demais
+   bounded contexts (booking, payment), sem nova dependência (Debezium)
+2. **Index mapping com analyzer português** — stemming + asciifolding +
+   stopwords; "música" encontra "musica", "cantores" encontra "cantor"
+3. **`multi_match` + `fuzziness: AUTO`** — tolerante a typos com
+   `prefix_length: 2` para evitar matches absurdos
+4. **`bool { must, filter }`** — `must` afeta score, `filter` é cacheável (e
+   melhor para `term`/`range` exatos)
+5. **`edge_ngram` para autocomplete** — sugestões em ~10ms enquanto o usuário
+   digita
+6. **Idempotência via `es.index({ id })`** — at-least-once do Kafka cobre
+   reentrega de mensagens
+7. **Backfill via reemissão de domain events** — endpoint admin que reemite
+   para tudo que está em status indexável
+8. **Trade-off explícito** — domain events vs CDC: começar simples, evoluir
+   para Outbox + Debezium quando volume e governança exigirem (cap-18)
 
 ---
 

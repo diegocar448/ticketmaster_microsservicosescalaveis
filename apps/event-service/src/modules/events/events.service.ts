@@ -144,16 +144,25 @@ export class EventsService {
 
     // Notificar outros serviços via Kafka
     if (newStatus === 'on_sale') {
+      // Payload EventReplicatedEvent: contrato com booking-service.
+      // booking mantém réplica local para o payment-service enriquecer os
+      // line_items do Stripe Checkout (eventTitle, thumbnailUrl).
+      // Ver packages/types/kafka-topics.ts:EventReplicatedEventSchema.
       await this.kafka.emit(
         KAFKA_TOPICS.EVENT_PUBLISHED,
         {
-          eventId: event.id,
-          organizerId: event.organizerId,
-          title: event.title,
-          startAt: event.startAt,
-          venueCity: event.venueCity,
+          id: updated.id,
+          organizerId: updated.organizerId,
+          title: updated.title,
+          slug: updated.slug,
+          status: updated.status,
+          startAt: updated.startAt,
+          endAt: updated.endAt,
+          venueCity: updated.venueCity,
+          venueState: updated.venueState,
+          thumbnailUrl: updated.thumbnailUrl,
         },
-        event.id,  // key = eventId → mesma partição = ordem garantida por evento
+        updated.id,  // key = eventId → mesma partição = ordem garantida por evento
       );
     }
 

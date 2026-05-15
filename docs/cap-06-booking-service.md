@@ -835,6 +835,7 @@ import { RedisModule } from '@showpass/redis';
 import { KafkaModule } from '@showpass/kafka';
 import { ReservationsModule } from './modules/reservations/reservations.module.js';
 import { TicketBatchesModule } from './modules/ticket-batches/ticket-batches.module.js';
+import { EventsModule } from './modules/events/events.module.js';
 import { BuyersModule } from './modules/buyers/buyers.module.js';
 
 @Module({
@@ -854,6 +855,10 @@ import { BuyersModule } from './modules/buyers/buyers.module.js';
     ReservationsModule,
     // Consumer Kafka: mantém réplica local de TicketBatch atualizada
     TicketBatchesModule,
+    // Consumer Kafka: replica Event (title + thumbnail) para o payment-service
+    // enriquecer os line_items do Stripe Checkout sem chamar event-service.
+    // Ver Passo 6.11.
+    EventsModule,
     // Consumer Kafka: replica buyer do auth-service para satisfazer FK
     // Reservation.buyerId. Dados sensíveis (passwordHash) NUNCA trafegam.
     BuyersModule,
@@ -1114,6 +1119,220 @@ A linha deve aparecer com `lastSyncAt` preenchido — prova de que o consumer es
 
 ---
 
+## Passo 6.11 — Event Replicated Consumer (para o payment-service)
+
+### Por que replicar Event aqui?
+
+O `payment-service` (cap-07) monta os `line_items` do Stripe Checkout consultando `GET /bookings/reservations/:id`. O Stripe **exige** `product_data.name` não-vazio — sem um título do evento no response, ele rejeita a criação da sessão com:
+
+```
+400 Bad Request — You must specify either `product` or `product_data` when creating a price.
+```
+
+Duas formas de resolver:
+
+- **(A)** `booking-service` chama `event-service` via HTTP a cada `GET /reservations/:id` — +50ms de latência no path quente e acoplamento forte.
+- **(B)** Replicar `Event` localmente via Kafka — **JOIN Prisma** (~0.5ms) na hora do enriquecimento, e booking fica autônomo.
+
+Escolhemos **(B)** pelo mesmo motivo de `TicketBatch`: performance + resiliência + bounded context claro. Trade-off aceito: eventual consistency. Se o organizer renomeia o evento **durante** o checkout, o recibo do Stripe pode mostrar o título antigo por ~1s. Aceitável — rename é raro e o dado é cosmético.
+
+### Schema da réplica
+
+```prisma
+// apps/booking-service/prisma/schema.prisma
+model Event {
+  // id vem do event-service (mesmo UUID) — correlação cross-service
+  id          String @id @db.Uuid
+  organizerId String @db.Uuid
+
+  title String
+  slug  String @unique
+  status String
+
+  startAt DateTime
+  endAt   DateTime
+
+  venueCity  String
+  venueState String
+
+  thumbnailUrl String?
+
+  lastSyncAt DateTime @default(now())
+
+  @@index([organizerId])
+  @@map("events")
+}
+```
+
+**Campos NÃO replicados:** `description`, `reservedCount`, `soldCount`, `totalCapacity`. Booking não precisa deles — menos superfície = menos drift.
+
+### O schema do evento Kafka
+
+Adicionado em `packages/types/src/kafka-topics.ts`:
+
+```typescript
+export const EventReplicatedEventSchema = z.object({
+  id: z.uuid(),
+  organizerId: z.uuid(),
+  title: z.string(),
+  slug: z.string(),
+  status: z.string(),
+  startAt: z.coerce.date(),
+  endAt: z.coerce.date(),
+  venueCity: z.string(),
+  venueState: z.string(),
+  thumbnailUrl: z.string().nullable(),
+});
+
+export type EventReplicatedEvent = z.infer<typeof EventReplicatedEventSchema>;
+```
+
+### Quem publica?
+
+`event-service/src/modules/events/events.service.ts`, na transição para `on_sale`, emite o snapshot completo no tópico `events.event-published` (`KAFKA_TOPICS.EVENT_PUBLISHED`). Ver cap-05 onde o `transitionStatus` já estava plumbed — agora ele carrega `slug`, `thumbnailUrl`, `endAt`, `venueState` em vez do payload mínimo antigo.
+
+### O consumer
+
+```typescript
+// apps/booking-service/src/modules/events/events.consumer.ts
+import { Controller, Logger } from '@nestjs/common';
+import { EventPattern, Payload } from '@nestjs/microservices';
+import { PrismaService } from '../../prisma/prisma.service.js';
+import { KAFKA_TOPICS, EventReplicatedEventSchema } from '@showpass/types';
+
+@Controller()
+export class EventsConsumer {
+  private readonly logger = new Logger(EventsConsumer.name);
+
+  constructor(private readonly prisma: PrismaService) {}
+
+  @EventPattern(KAFKA_TOPICS.EVENT_PUBLISHED)
+  async onPublished(@Payload() rawPayload: unknown): Promise<void> {
+    // Validar com Zod antes de confiar — mesma disciplina dos outros consumers
+    const parsed = EventReplicatedEventSchema.safeParse(rawPayload);
+    if (!parsed.success) {
+      this.logger.error('Payload inválido em EVENT_PUBLISHED', {
+        errors: parsed.error.issues,
+      });
+      return; // sem relançar: nack infinito bloqueia a partição
+    }
+
+    const event = parsed.data;
+
+    await this.prisma.event.upsert({
+      where: { id: event.id },
+      create: {
+        id: event.id,
+        organizerId: event.organizerId,
+        title: event.title,
+        slug: event.slug,
+        status: event.status,
+        startAt: event.startAt,
+        endAt: event.endAt,
+        venueCity: event.venueCity,
+        venueState: event.venueState,
+        thumbnailUrl: event.thumbnailUrl,
+      },
+      update: {
+        title: event.title,
+        slug: event.slug,
+        status: event.status,
+        startAt: event.startAt,
+        endAt: event.endAt,
+        venueCity: event.venueCity,
+        venueState: event.venueState,
+        thumbnailUrl: event.thumbnailUrl,
+        lastSyncAt: new Date(),
+      },
+    });
+  }
+
+  // UPDATED usa a mesma lógica — idempotência do upsert cobre ambos os casos
+  @EventPattern(KAFKA_TOPICS.EVENT_UPDATED)
+  async onUpdated(@Payload() rawPayload: unknown): Promise<void> {
+    return this.onPublished(rawPayload);
+  }
+}
+```
+
+### Enriquecimento no findOne()
+
+O `GET /bookings/reservations/:id` agora devolve cada item com `eventTitle`, `thumbnailUrl` e `ticketBatchName`:
+
+```typescript
+// apps/booking-service/src/modules/reservations/reservations.controller.ts
+const [event, batches] = await Promise.all([
+  this.prisma.event.findUnique({
+    where: { id: reservation.eventId },
+    select: { title: true, thumbnailUrl: true },
+  }),
+  this.prisma.ticketBatch.findMany({
+    where: { id: { in: reservation.items.map((i) => i.ticketBatchId) } },
+    select: { id: true, name: true },
+  }),
+]);
+
+// Falhar cedo se o consumer ainda não replicou — melhor 404 aqui do que 500 no payment
+if (!event) {
+  throw new NotFoundException(
+    'Evento ainda não foi replicado — tente novamente em instantes',
+  );
+}
+
+const batchNameById = new Map(batches.map((b) => [b.id, b.name]));
+
+return {
+  ...reservation,
+  items: reservation.items.map((item) => ({
+    ...item,
+    ticketBatchName: batchNameById.get(item.ticketBatchId) ?? '',
+    seatLabel: null,               // sem réplica de Seat — cap-11 pode evoluir
+    eventTitle: event.title,
+    thumbnailUrl: event.thumbnailUrl,
+  })),
+};
+```
+
+### Migration
+
+```bash
+cd apps/booking-service
+pnpm db:migrate --name event_replicated_from_event_service
+```
+
+Isso cria a tabela `events` com o schema acima, gerando `prisma/migrations/<timestamp>_event_replicated_from_event_service/migration.sql`.
+
+### Registrar o módulo
+
+```typescript
+// apps/booking-service/src/app.module.ts
+import { EventsModule } from './modules/events/events.module.js';
+
+@Module({
+  imports: [
+    // ...
+    TicketBatchesModule,
+    // Réplica de Event (title + thumbnail) para o payment-service
+    // enriquecer os line_items do Stripe Checkout sem chamar event-service.
+    EventsModule,
+    BuyersModule,
+  ],
+})
+export class AppModule {}
+```
+
+### Verificar replicação
+
+```bash
+# Após transicionar um evento para on_sale (ver cap-05), conferir no booking DB:
+docker compose exec postgres psql -U postgres -d showpass_booking \
+  -c "SELECT id, title, slug, status, \"lastSyncAt\" FROM events;"
+```
+
+Se a linha não aparece: os tópicos Kafka podem não existir (`kafka-topics.sh`) ou o consumer não ingressou no consumer group ainda. Ver logs com `./scripts/dev.sh logs booking-service`.
+
+---
+
 ## Diagrama do fluxo de reserva
 
 ```
@@ -1169,17 +1388,18 @@ Este é o capítulo mais importante para testar: você vai ver o Redis SETNX em 
 # Terminal 1 — infraestrutura
 docker compose up -d
 
-# Terminal 2 — auth-service
-pnpm --filter @showpass/auth-service run dev          # porta 3006
-
-# Terminal 3 — event-service
-pnpm --filter @showpass/event-service run dev         # porta 3003
-
-# Terminal 4 — booking-service
+# Migrations do booking-service (uma vez por ambiente novo)
 pnpm --filter @showpass/booking-service run db:generate
 pnpm --filter @showpass/booking-service run db:migrate
-pnpm --filter @showpass/booking-service run dev       # porta 3004
+
+# Subir todos os serviços NestJS em background (auth/event/booking/payment/gateway)
+make dev-services
+
+# Verificar — devem aparecer 5 bolinhas verdes
+make dev-status
 ```
+
+> **Observação:** o `booking-service` já está registrado no `scripts/dev.sh` desde a primeira versão deste capítulo. Se você está criando um serviço **adicional** (ex: experimentando um search-v2), siga o guia [**Como adicionar um novo microsserviço ao `dev-services`**](cap-01-ambiente-monorepo.md#como-adicionar-um-novo-microsserviço-ao-dev-services) no cap-01.
 
 ### Pré-requisitos — cap-04 (buyers) e cap-05 (evento)
 

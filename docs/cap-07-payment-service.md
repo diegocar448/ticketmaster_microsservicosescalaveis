@@ -383,6 +383,16 @@ type StripeLineItem = NonNullable<
   Parameters<Stripe['checkout']['sessions']['create']>[0]
 >['line_items'] extends Array<infer L> | undefined ? L : never;
 
+// Contrato com o booking-service (GET /bookings/reservations/:id).
+//
+// booking enriquece cada item com dados das suas RÉPLICAS LOCAIS:
+//   - `ticketBatchName`  ← réplica TicketBatch (cap-06, Passo 6.11 de TicketBatch)
+//   - `eventTitle` + `thumbnailUrl` ← réplica Event (cap-06, Passo 6.11)
+//
+// Sem essas réplicas, o booking devolveria a entidade Prisma crua e o Stripe
+// rejeitaria a criação da Checkout Session com:
+//   400 "You must specify either product or product_data when creating a price."
+// porque `product_data.name` chegaria como string vazia.
 interface ReservationItem {
   ticketBatchId: string;
   ticketBatchName: string;
@@ -1043,29 +1053,46 @@ KAFKA_BROKERS=localhost:29092
 KAFKA_CONSUMER_GROUP_ID=payment-service-consumer
 ```
 
-O **seed dos plans** é obrigatório — os consumers do `Organizer` fazem `findUnique({ where: { slug } })`:
+O **seed dos plans** é obrigatório — os consumers do `Organizer` fazem `findUnique({ where: { slug } })`. Mesmos slugs do auth-service e event-service (UUIDs diferem entre bancos, slugs são estáveis):
 
 ```typescript
 // apps/payment-service/prisma/seed.ts
 
-import { PrismaClient } from '../src/prisma/generated/client.js';
+import 'dotenv/config';
+import { Pool } from 'pg';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { PrismaClient } from '../src/prisma/generated/index.js';
 
-const prisma = new PrismaClient();
+// Prisma 7: "client" engine exige driver adapter (não usa binary engine).
+// dotenv/config carrega DATABASE_URL antes do Pool se conectar.
+const pool = new Pool({ connectionString: process.env['DATABASE_URL'] });
+const adapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter });
 
-async function main() {
-  // Mesmos slugs que event-service e auth-service — os UUIDs diferem, os slugs são estáveis
-  await prisma.plan.createMany({
-    data: [
-      { slug: 'free', name: 'Free', serviceFeePercent: 10.0 },
-      { slug: 'pro', name: 'Pro', serviceFeePercent: 7.0 },
-      { slug: 'enterprise', name: 'Enterprise', serviceFeePercent: 4.0 },
-    ],
-    skipDuplicates: true,
-  });
+async function main(): Promise<void> {
+  const plans = [
+    { slug: 'free',       name: 'Free',       serviceFeePercent: 10.0 },
+    { slug: 'pro',        name: 'Pro',        serviceFeePercent:  7.0 },
+    { slug: 'enterprise', name: 'Enterprise', serviceFeePercent:  4.0 },
+  ];
+
+  for (const plan of plans) {
+    await prisma.plan.upsert({
+      where:  { slug: plan.slug },
+      create: plan,
+      update: { name: plan.name, serviceFeePercent: plan.serviceFeePercent },
+    });
+  }
+
+  console.log('Seed payment-service concluído: 3 planos (free/pro/enterprise)');
 }
 
-main().finally(() => prisma.$disconnect());
+main()
+  .catch((err) => { console.error(err); process.exit(1); })
+  .finally(() => prisma.$disconnect());
 ```
+
+> **Por que o `new PrismaClient()` sem argumento falha com `PrismaClientInitializationError: 'PrismaClientOptions'`:** Prisma 7 removeu o binary engine nativo em favor do engine `"client"` em TypeScript, que conversa com o banco via **driver adapter**. Sem `{ adapter }`, o cliente não sabe como abrir conexão. Padrão idêntico em todos os seeds dos serviços (auth/event/payment).
 
 E o `Makefile` no root ganhou o payment-service:
 
@@ -1091,9 +1118,148 @@ db-seed:
 
 ---
 
+## Setup do Stripe (API keys + CLI)
+
+Antes de testar, você precisa de **duas coisas do Stripe**: uma **Secret Key** (para o payment-service chamar a API do Stripe) e um **Webhook Secret** (para validar HMAC dos webhooks recebidos). Ambas são obtidas em conta no **test mode** — zero custo, sem cartão.
+
+### 1. Criar conta Stripe (se ainda não tem)
+
+1. Acesse [stripe.com](https://stripe.com) e clique em **Start now** / **Sign up**
+2. Informe email + senha — **não precisa** preencher dados da empresa agora (só para sair do test mode)
+3. Confirme o email
+
+### 2. Pegar a `STRIPE_SECRET_KEY`
+
+1. Logue em [dashboard.stripe.com](https://dashboard.stripe.com)
+2. No canto superior direito, **confirme que o toggle "Test mode" está LIGADO** (fica laranja/amarelo). Essa é a diferença entre cobrar cartões de verdade (`sk_live_...`) e usar cartões de teste (`sk_test_...`)
+3. Menu lateral → **Desenvolvedores** (Developers) → **Chaves da API** (API keys)
+4. Na seção **Chaves padrão** (Standard keys), você verá três linhas:
+
+   | Nome na tela     | Prefixo        | Usar onde?                                              |
+   |------------------|----------------|---------------------------------------------------------|
+   | Chave publicável | `pk_test_...`  | Só frontend/mobile (cap-12). **Não** no backend         |
+   | **Chave secreta**| `sk_test_...`  | **`STRIPE_SECRET_KEY` no `.env` do payment-service**    |
+   | Chave restrita   | `rk_test_...`  | Não usamos (permissões granulares — uso avançado)       |
+
+5. Clique em **"Revelar chave secreta de teste"** → copie o valor (começa com `sk_test_51...` e tem ~107 caracteres)
+
+6. Cole em [apps/payment-service/.env](apps/payment-service/.env):
+
+   ```bash
+   STRIPE_SECRET_KEY=sk_test_51AbCdEfGhIj...                 # ← sua chave real aqui
+   STRIPE_WEBHOOK_SECRET=whsec_GERADO_PELO_STRIPE_CLI        # preenchido no passo 4
+   ```
+
+   > **Nunca commite essa chave.** O `.env` está no `.gitignore`. Se vazar por acidente, vá em **Desenvolvedores → Chaves da API → Girar chave** imediatamente.
+
+### 3. Instalar a Stripe CLI
+
+A Stripe CLI faz o túnel entre o Stripe (que está na internet) e seu localhost:3002 — sem ela, você teria que expor o serviço via ngrok ou deploy para testar webhooks. Ela **não vem** nos repositórios padrão do Ubuntu.
+
+**Opção A — APT (recomendado, atualiza com `sudo apt upgrade`):**
+
+```bash
+# Chave GPG do Stripe
+curl -fsSL https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public \
+  | sudo gpg --dearmor -o /usr/share/keyrings/stripe.gpg
+
+# Repositório APT
+echo "deb [signed-by=/usr/share/keyrings/stripe.gpg] https://packages.stripe.dev/stripe-cli-debian-local stable main" \
+  | sudo tee -a /etc/apt/sources.list.d/stripe.list
+
+sudo apt update
+sudo apt install -y stripe
+```
+
+**Opção B — Binário direto (sem sudo):**
+
+```bash
+VERSION=$(curl -s https://api.github.com/repos/stripe/stripe-cli/releases/latest | grep -Po '"tag_name": "v\K[^"]+')
+mkdir -p ~/.local/bin
+curl -L "https://github.com/stripe/stripe-cli/releases/download/v${VERSION}/stripe_${VERSION}_linux_x86_64.tar.gz" \
+  | tar -xz -C ~/.local/bin stripe
+```
+
+**Validar:**
+
+```bash
+stripe --version       # deve imprimir "stripe version 1.30.x" ou similar
+```
+
+### 4. Autenticar a CLI (`stripe login`)
+
+```bash
+stripe login
+```
+
+A CLI imprime algo como:
+
+```
+Your pairing code is: grace-defeat-fun-wise
+This pairing code verifies your authentication with Stripe.
+To authenticate with Stripe, please go to: https://dashboard.stripe.com/stripecli/confirm_auth?t=XXXXXXXXXXXXXXXXXXXXXXXXXXX...
+Waiting for confirmation...
+```
+
+Fluxo de confirmação:
+
+1. **Copie a URL INTEIRA** que apareceu no seu terminal (começa com `https://dashboard.stripe.com/stripecli/confirm_auth?t=` e continua por ~180 caracteres)
+   > **Gotcha comum:** não é um valor que você encontra em outro lugar. A CLI gera esse URL na hora com um token único em `?t=...` — copie exatamente o que o terminal mostrou, não o exemplo da documentação
+2. Cole no **browser do Windows** (não tem browser no WSL puro)
+3. Na página que abrir, **confira o pairing code** — tem que bater exatamente com o do terminal (ex: `grace-defeat-fun-wise`)
+4. Clique em **"Allow access"**
+5. Volte ao terminal: deve aparecer `> Done! The Stripe CLI is configured for your account with account id acct_1TOU8xD...`
+
+**Se der erro "O token de confirmação não pode ser carregado":**
+- Token expirou (~2 min) ou URL veio truncada no copy/paste
+- Pressione `Ctrl+C` no terminal, rode `stripe login` de novo, copie a URL completa
+
+**WSL tip (opcional):** para o `stripe login` abrir o browser do Windows automaticamente nas próximas vezes:
+
+```bash
+sudo apt install wslu
+echo 'export BROWSER=wslview' >> ~/.bashrc
+source ~/.bashrc
+```
+
+A autenticação fica salva em `~/.config/stripe/config.toml` — você só roda `stripe login` **uma vez por máquina**.
+
+### 5. Gerar e salvar o `STRIPE_WEBHOOK_SECRET`
+
+O webhook secret é **diferente** da Secret Key — ele é gerado dinamicamente pelo `stripe listen` e usado para validar HMAC-SHA256 dos eventos que o Stripe envia (OWASP A10). Em produção, ele é criado manualmente no dashboard quando você cadastra o endpoint público; em dev, a CLI faz isso automaticamente.
+
+Em um **terminal separado** (deixe este rodando enquanto testa):
+
+```bash
+stripe listen --forward-to http://localhost:3002/webhooks/stripe
+```
+
+Primeira linha do output:
+
+```
+> Ready! Your webhook signing secret is whsec_abc123def456... (^C to quit)
+```
+
+Copie esse `whsec_...` para [apps/payment-service/.env](apps/payment-service/.env):
+
+```bash
+STRIPE_WEBHOOK_SECRET=whsec_abc123def456...
+```
+
+**Reinicie o payment-service** (ele só lê o `.env` no boot):
+
+```bash
+./scripts/dev.sh stop
+./scripts/dev.sh start
+```
+
+> **Gotcha importante:** o `whsec_...` **muda toda vez** que você reinicia `stripe listen`. Se fechar o terminal e abrir de novo, precisa atualizar o `.env` + reiniciar o payment-service. Em produção isso não é problema — o secret é estático porque o endpoint está registrado permanentemente no dashboard.
+
+---
+
 ## Testando na prática
 
-Você vai precisar da [Stripe CLI](https://docs.stripe.com/stripe-cli) instalada e logada (`stripe login`).
+Com o Stripe configurado (passos acima) e os 5 serviços rodando, agora você consegue testar o fluxo ponta-a-ponta.
 
 ### O que precisa estar rodando
 
@@ -1101,30 +1267,22 @@ Você vai precisar da [Stripe CLI](https://docs.stripe.com/stripe-cli) instalada
 # Terminal 1 — infraestrutura
 docker compose up -d
 
-# Terminal 2 — auth-service (porta 3006)
-pnpm --filter @showpass/auth-service run dev
-
-# Terminal 3 — event-service (porta 3003)
-pnpm --filter @showpass/event-service run dev
-
-# Terminal 4 — booking-service (porta 3004)
-pnpm --filter @showpass/booking-service run dev
-
-# Terminal 5 — payment-service (porta 3002)
+# Migrations + seed do payment-service (uma vez por ambiente novo)
 pnpm --filter @showpass/payment-service run db:generate
 pnpm --filter @showpass/payment-service run db:migrate
 pnpm --filter @showpass/payment-service run db:seed
-pnpm --filter @showpass/payment-service run dev
 
-# Terminal 6 — Stripe CLI (reencaminha webhooks para o serviço local)
+# Terminal 2 — todos os 5 serviços NestJS em background
+make dev-services        # auth(3006) + event(3003) + booking(3004) + payment(3002) + gateway(3000)
+make dev-status          # confirme 5 bolinhas verdes
+
+# Terminal 3 — Stripe CLI (mantenha rodando; já configurado no "Setup do Stripe" acima)
 stripe listen --forward-to http://localhost:3002/webhooks/stripe
-
-# Terminal 7 — api-gateway (porta 3000)
-pnpm --filter @showpass/api-gateway run dev
 ```
 
-> A primeira linha de `stripe listen` é o webhook secret: `> Ready! Your webhook signing secret is whsec_...`
-> Copie para `apps/payment-service/.env` em `STRIPE_WEBHOOK_SECRET`.
+> Se ainda não configurou `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` no `.env`, volte para a seção **[Setup do Stripe (API keys + CLI)](#setup-do-stripe-api-keys--cli)** — sem isso, `POST /payments/orders` retorna **401 do Stripe** (não do seu gateway) com mensagem `Invalid API Key provided: sk_test_...`.
+
+> **`payment-service` no `dev-services`:** este capítulo é o primeiro que adiciona o `payment-service` ao conjunto de serviços iniciados por `make dev-services`. Se você estiver revisitando o repo num ambiente antigo e o `make dev-status` mostrar `payment-service — parado`, sua cópia de `scripts/dev.sh` está desatualizada — atualize a partir do cap-07 ou siga o guia [**Como adicionar um novo microsserviço ao `dev-services`**](cap-01-ambiente-monorepo.md#como-adicionar-um-novo-microsserviço-ao-dev-services) do cap-01.
 
 ### Fluxo ponta-a-ponta
 

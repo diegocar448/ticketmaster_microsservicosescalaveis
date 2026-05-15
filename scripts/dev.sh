@@ -18,13 +18,21 @@ LOG_DIR="/tmp/showpass-logs"
 mkdir -p "$LOG_DIR"
 
 # ─── Serviços disponíveis ──────────────────────────────────────────────────────
-# Formato: "nome:porta:filtro-pnpm"
+# Formato: "nome:porta". Para adicionar um novo serviço ver:
+# docs/cap-01-ambiente-monorepo.md → "Como adicionar um novo microsserviço ao dev.sh"
+#
+# IMPORTANTE: a ORDEM do array START_ORDER abaixo define a sequência de boot.
+# Dependências de fato (Kafka replication) → auth primeiro, gateway último.
 declare -A SERVICES=(
   [auth-service]="3006"
   [event-service]="3003"
   [booking-service]="3004"
+  [payment-service]="3002"
   [api-gateway]="3000"
 )
+
+# Ordem determinística para iterar (bash associative arrays não preservam ordem).
+START_ORDER=(auth-service event-service booking-service payment-service api-gateway)
 
 # ─── Cores ────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -57,18 +65,21 @@ start_service() {
     npm run dev >> "$log" 2>&1
   ) &
 
-  # Aguarda o serviço subir (máx 15s)
+  # Aguarda o serviço amarrar a porta. Serviços com Kafka (event/booking/payment)
+  # demoram ~14s: consumer group join (~4s) + Prisma (~3s) + boot Nest.
+  # 45s dá margem para primeiro boot em máquinas lentas + Kafka rebalance.
+  local max_wait=45
   local i=0
-  while [ $i -lt 15 ]; do
+  while [ $i -lt $max_wait ]; do
     if pid_on_port "$port" > /dev/null 2>&1; then
-      echo -e "  ${GREEN}✓  $name pronto (porta $port)${RESET}"
+      echo -e "  ${GREEN}✓  $name pronto (porta $port, ${i}s)${RESET}"
       return
     fi
     sleep 1
     i=$((i + 1))
   done
 
-  echo -e "  ${RED}✗  $name demorou para subir — veja: tail -f $log${RESET}"
+  echo -e "  ${RED}✗  $name demorou ${max_wait}s para subir — veja: tail -f $log${RESET}"
 }
 
 stop_service() {
@@ -87,19 +98,38 @@ stop_service() {
 
 # ─── Comandos ─────────────────────────────────────────────────────────────────
 
+ensure_kafka_topics() {
+  # Pré-cria tópicos ANTES de subir consumers. Evita UNKNOWN_TOPIC_OR_PARTITION
+  # no startup de event/booking/payment que têm `allowAutoTopicCreation: false`.
+  if [ -x "$ROOT/scripts/kafka-topics.sh" ]; then
+    echo -e "  ${CYAN}⚙  Garantindo tópicos Kafka...${RESET}"
+    "$ROOT/scripts/kafka-topics.sh" >/dev/null 2>&1 || \
+      echo -e "  ${YELLOW}⚠  Falha ao criar tópicos (infra rodando? make infra-up)${RESET}"
+  fi
+}
+
 cmd_start() {
   echo -e "\n${BLUE}╔══════════════════════════════════════╗"
   echo -e "║   ShowPass — Iniciando serviços      ║"
   echo -e "╚══════════════════════════════════════╝${RESET}\n"
 
+  ensure_kafka_topics
+
   if [ $# -eq 0 ]; then
-    # Inicia todos os serviços na ordem correta
-    start_service "auth-service"
-    start_service "event-service"
-    start_service "booking-service"
-    start_service "api-gateway"
+    # Inicia todos os serviços na ordem correta (ver START_ORDER no topo)
+    for svc in "${START_ORDER[@]}"; do
+      start_service "$svc"
+    done
   else
     for svc in "$@"; do
+      # Aceita aliases curtos (auth, event, booking, payment, gateway)
+      case "$svc" in
+        auth)    svc=auth-service ;;
+        event)   svc=event-service ;;
+        booking) svc=booking-service ;;
+        payment) svc=payment-service ;;
+        gateway) svc=api-gateway ;;
+      esac
       if [ -v "SERVICES[$svc]" ]; then
         start_service "$svc"
       else
@@ -114,6 +144,7 @@ cmd_start() {
   echo -e "  Auth:        ${CYAN}http://localhost:3006/auth${RESET}"
   echo -e "  Events:      ${CYAN}http://localhost:3003/events${RESET}"
   echo -e "  Bookings:    ${CYAN}http://localhost:3004/bookings/reservations${RESET}"
+  echo -e "  Payments:    ${CYAN}http://localhost:3002/payments/orders${RESET}"
   echo -e "  Logs:        ${CYAN}$LOG_DIR/${RESET}"
   echo -e "\n  Para ver logs: ${YELLOW}./scripts/dev.sh logs${RESET}"
   echo -e "  Para parar:   ${YELLOW}./scripts/dev.sh stop${RESET}\n"
@@ -129,7 +160,7 @@ cmd_stop() {
 
 cmd_status() {
   echo -e "\n${BLUE}Status dos serviços:${RESET}\n"
-  for name in auth-service event-service booking-service api-gateway; do
+  for name in "${START_ORDER[@]}"; do
     local port="${SERVICES[$name]}"
     local pid
     pid=$(pid_on_port "$port")
@@ -148,7 +179,7 @@ cmd_logs() {
     tail -f "$LOG_DIR/$filter.log"
   else
     # Mostra as últimas 20 linhas de cada serviço
-    for name in auth-service event-service booking-service api-gateway; do
+    for name in "${START_ORDER[@]}"; do
       local log="$LOG_DIR/$name.log"
       if [ -f "$log" ]; then
         echo -e "\n${CYAN}─── $name ───${RESET}"
@@ -165,12 +196,13 @@ case "${1:-start}" in
   stop)    cmd_stop ;;
   status)  cmd_status ;;
   logs)    shift; cmd_logs "${1:-}" ;;
-  auth|auth-service)     cmd_start auth-service ;;
+  auth|auth-service)       cmd_start auth-service ;;
   event|event-service)     cmd_start event-service ;;
   booking|booking-service) cmd_start booking-service ;;
+  payment|payment-service) cmd_start payment-service ;;
   gateway|api-gateway)     cmd_start api-gateway ;;
   *)
-    echo "Uso: $0 [start|stop|status|logs|auth|event|gateway]"
+    echo "Uso: $0 [start|stop|status|logs|auth|event|booking|payment|gateway]"
     exit 1
     ;;
 esac

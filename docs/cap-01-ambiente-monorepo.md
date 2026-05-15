@@ -798,8 +798,15 @@ O script Python gera o par de chaves RSA 4096-bit e as salva nos `.env` no forma
 ### `scripts/dev.sh` — inicialização dos serviços em background
 
 ```bash
-# Inicia auth-service (3006), event-service (3003) e api-gateway (3000) em background
+# Inicia todos os serviços NestJS do monorepo em background (na ordem correta)
 ./scripts/dev.sh start
+
+# Iniciar apenas um serviço (por alias curto)
+./scripts/dev.sh auth       # auth-service
+./scripts/dev.sh event      # event-service
+./scripts/dev.sh booking    # booking-service
+./scripts/dev.sh payment    # payment-service
+./scripts/dev.sh gateway    # api-gateway
 
 # Parar todos
 ./scripts/dev.sh stop
@@ -815,6 +822,110 @@ O script Python gera o par de chaves RSA 4096-bit e as salva nos `.env` no forma
 ```
 
 Os logs ficam em `/tmp/showpass-logs/`. Equivalentes via Makefile: `make dev-services`, `make dev-stop`, `make dev-status`.
+
+Antes de subir os serviços, o script chama `scripts/kafka-topics.sh` para garantir que todos os tópicos Kafka estejam criados. Isto é necessário porque nossos consumers usam `allowAutoTopicCreation: false` (segurança: não queremos que um typo crie tópico-fantasma em produção). Sem a pré-criação, `event-service`, `booking-service` e `payment-service` crasheariam no boot com `UNKNOWN_TOPIC_OR_PARTITION`.
+
+> **Timing gotcha — por que `make dev-status` pode mostrar `○ parado` logo após o `make dev-services`:** os serviços com Kafka (`event`, `booking`, `payment`) levam ~14s até amarrar a porta (consumer group join ~4s + Prisma ~3s + boot Nest). O `start_service()` espera até **45s** por cada; se demorar mais, imprime `✗ demorou para subir` mas o serviço **continua bootando em background**. Se você rodar `make dev-status` imediatamente depois de ver esse erro, ainda vai aparecer `parado` — espere mais 15-20 segundos e cheque de novo, ou abra o log (`./scripts/dev.sh logs <nome>`) para ver a linha `Nest application successfully started`.
+
+---
+
+### Como adicionar um novo microsserviço ao `dev-services`
+
+Esta seção é **referenciada em cada capítulo que introduz um novo serviço**. Sempre que você criar um novo `apps/<serviço>/` rodando via NestJS, siga **estes 4 passos** para que ele apareça no `make dev-services`, no `make dev-status` e aceite alias curto (`./scripts/dev.sh <alias>`).
+
+> **Para iniciantes:** "adicionar ao dev-services" significa cadastrar seu serviço em 2 arrays de bash e 1 case statement. São ~5 linhas de código em um único arquivo (`scripts/dev.sh`). Não há magia — o script é um wrapper burro em cima de `npm run dev` de cada app.
+
+**Passo 1 — Escolha uma porta livre e garanta que o serviço roda via `npm run dev`**
+
+Cada serviço precisa de uma porta TCP única. Convenção do ShowPass:
+
+| Serviço          | Porta |
+|------------------|-------|
+| api-gateway      | 3000  |
+| search-service   | 3001  |
+| payment-service  | 3002  |
+| event-service    | 3003  |
+| booking-service  | 3004  |
+| worker-service   | 3005  |
+| auth-service     | 3006  |
+
+Teste manual primeiro — **antes de tocar no `dev.sh`**, rode:
+
+```bash
+cd apps/<seu-serviço>
+npm run dev
+```
+
+Se ele sobe sozinho na porta que você escolheu, prossiga. Se falha, resolva antes (missing `.env`, erro de type-check, etc.) — o `dev.sh` não consegue resgatar um app que não sobe standalone.
+
+**Passo 2 — Cadastrar no `SERVICES` array (`scripts/dev.sh`, linha ~26)**
+
+```bash
+declare -A SERVICES=(
+  [auth-service]="3006"
+  [event-service]="3003"
+  [booking-service]="3004"
+  [payment-service]="3002"
+  [api-gateway]="3000"
+  [seu-novo-service]="3007"   # ← adicione aqui, com a porta do Passo 1
+)
+```
+
+Este array mapeia **nome-da-pasta → porta**. O nome TEM que bater com `apps/<nome>/` — o script faz `cd "$ROOT/apps/$name"` internamente.
+
+**Passo 3 — Decidir a posição em `START_ORDER` (linha ~35)**
+
+```bash
+START_ORDER=(auth-service event-service booking-service payment-service api-gateway)
+```
+
+A ordem importa porque alguns serviços **dependem de dados replicados via Kafka** de outros:
+
+- **`auth-service` sempre primeiro** — ele publica eventos `auth.buyer.created` e `auth.organizer.created` que os outros consomem. Se subir depois, os consumers inicializam com réplica vazia até o primeiro login/signup.
+- **`api-gateway` sempre por último** — ele roteia para todos os outros; subir antes deles faz `ECONNREFUSED` nas primeiras requests.
+- **Serviços que replicam dados (event, booking, payment)** — entre auth e gateway. Ordem interna entre eles não é crítica para boot, mas pode afetar **consumo inicial de eventos em lote** no primeiro start do ambiente.
+
+Se seu novo serviço **não depende de réplicas** (caso do `search-service`), coloque perto do começo. Se ele **consome muitos eventos** (caso do `worker-service`), coloque depois dos que produzem eventos.
+
+**Passo 4 — (Opcional) Adicionar alias curto em `cmd_start` e no `case` final**
+
+Dentro de `cmd_start()` (linha ~121) tem um bloco que traduz aliases:
+
+```bash
+case "$svc" in
+  auth)    svc=auth-service ;;
+  event)   svc=event-service ;;
+  booking) svc=booking-service ;;
+  payment) svc=payment-service ;;
+  gateway) svc=api-gateway ;;
+  novo)    svc=seu-novo-service ;;   # ← adicione aqui
+esac
+```
+
+E no `case` de entrada no final do arquivo (linha ~183):
+
+```bash
+novo|seu-novo-service) cmd_start seu-novo-service ;;
+```
+
+Agora `./scripts/dev.sh novo` inicia só ele.
+
+**Passo 5 — Verificar**
+
+```bash
+make dev-stop           # para tudo
+make dev-services       # sobe todos de novo (usa a nova ordem)
+make dev-status         # deve mostrar 6 bolinhas verdes (5 antigos + 1 novo)
+```
+
+Se o novo serviço aparecer como `○ parado`, o log está em `/tmp/showpass-logs/seu-novo-service.log` — abra com `tail -f` e investigue. Causas comuns:
+
+1. `.env` não foi criado (rode `make setup`)
+2. Porta já ocupada por processo zumbi (`lsof -ti :3007 | xargs kill -9`)
+3. Algum tópico Kafka que ele consome não está na lista de `TOPICS` em `scripts/kafka-topics.sh` — adicione lá e rode `./scripts/kafka-topics.sh` manualmente
+4. Migration Prisma não rodou (`pnpm --filter @showpass/seu-novo-service prisma migrate deploy`)
+
+> **Para avançados:** o `dev.sh` deliberadamente **não** tenta detectar serviços novos escaneando `apps/`. Fazê-lo exigiria convencionar porta/ordem em cada `package.json`, ou parsear `main.ts` — ambos são frágeis. Declarar explicitamente nos 2 arrays é O(n) para ler, trivial para entender em code review e impossível de quebrar silenciosamente.
 
 ---
 
