@@ -5,10 +5,16 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import type { Prisma } from '../../prisma/generated/index.js';
 import { SeatLockService } from '../locks/seat-lock.service.js';
 import { KafkaProducerService } from '@showpass/kafka';
 import { KAFKA_TOPICS } from '@showpass/types';
 import type { CreateReservationDto } from '@showpass/types';
+
+// Reserva com itens (mesmo include usado na transação de create)
+type ReservationWithItems = Prisma.ReservationGetPayload<{
+  include: { items: true };
+}>;
 
 // TTL da reserva no banco — mesmo valor do lock Redis (7 minutos)
 // Ambos devem ser iguais: quando o Redis expira, o job de expiração
@@ -36,7 +42,10 @@ export class ReservationsService {
    * 5. Se o DB falhar → liberar locks Redis (compensação)
    * 6. Emitir evento Kafka
    */
-  async create(buyerId: string, dto: CreateReservationDto) {
+  async create(
+    buyerId: string,
+    dto: CreateReservationDto,
+  ): Promise<ReservationWithItems> {
     // ─── 1. Verificar status do evento ────────────────────────────────────────
     // Buscar dados do evento via HTTP para o event-service
     // (em produção: HTTP com cache curto de 30s para não sobrecarregar)
@@ -224,7 +233,7 @@ export class ReservationsService {
         const available = batch.totalQuantity - batch.soldCount - batch.reservedCount;
         if (available < item.quantity) {
           throw new ConflictException(
-            `Lote "${batch.name}" não tem ingressos suficientes. Disponíveis: ${available}`,
+            `Lote "${batch.name}" não tem ingressos suficientes. Disponíveis: ${String(available)}`,
           );
         }
 

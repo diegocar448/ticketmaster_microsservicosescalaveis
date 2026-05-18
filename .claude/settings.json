@@ -182,7 +182,22 @@
       "Bash(echo \"exit=$? \\(124=timeout=ficou rodando=BOM; 1=crashou\\)\")",
       "Bash(node -e \"fetch\\('http://localhost:9200/events/_mapping'\\).then\\(r=>r.json\\(\\)\\).then\\(j=>console.log\\(JSON.stringify\\(Object.keys\\(j.events?.mappings?.properties||{}\\)\\)\\)\\).catch\\(e=>console.log\\('ERR',e.message\\)\\)\")",
       "Bash(grep -aA 30 \"Payload inválido em EVENT_PUBLISHED\")",
-      "Bash(node -e \"fetch\\('http://localhost:9200/events/_delete_by_query?refresh=true',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify\\({query:{match:{slug:'lollapalooza'}}}\\)}\\).then\\(r=>r.json\\(\\)\\).then\\(j=>console.log\\('docs de teste removidos: '+\\(j.deleted!==undefined?j.deleted:JSON.stringify\\(j\\).slice\\(0,80\\)\\)\\)\\).catch\\(e=>console.log\\('skip',e.message\\)\\)\")"
+      "Bash(node -e \"fetch\\('http://localhost:9200/events/_delete_by_query?refresh=true',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify\\({query:{match:{slug:'lollapalooza'}}}\\)}\\).then\\(r=>r.json\\(\\)\\).then\\(j=>console.log\\('docs de teste removidos: '+\\(j.deleted!==undefined?j.deleted:JSON.stringify\\(j\\).slice\\(0,80\\)\\)\\)\\).catch\\(e=>console.log\\('skip',e.message\\)\\)\")",
+      "Bash(sed -n '15,32p' apps/booking-service/src/app.module.ts)",
+      "Bash(sed -n '1,15p' apps/booking-service/src/common/guards/buyer.guard.ts)",
+      "Bash(pnpm --filter @showpass/event-service exec eslint src/)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(pnpm --filter @showpass/auth-service exec eslint src/)",
+      "Bash(pnpm --filter @showpass/auth-service run type-check)",
+      "Bash(grep -nE '\\\\$\\\\{')",
+      "Bash(pnpm --filter @showpass/booking-service exec eslint src/)",
+      "Bash(pnpm --filter @showpass/payment-service exec eslint src/)",
+      "Bash(rtk lint *)",
+      "Bash(echo \"exit-final=$?\")",
+      "Bash(echo \"pnpm-exit=$?\")",
+      "Bash(node -e \"const p=require\\('./package.json'\\);console.log\\(JSON.stringify\\(p.scripts\\)\\)\")",
+      "Bash(node -e 'const p=require\\('\\\\''./__TRACKED_VAR__'\\\\''\\);if\\(p.scripts&&p.scripts.lint\\)console.log\\('\\\\''__TRACKED_VAR__ →'\\\\'',p.scripts.lint\\)')",
+      "Bash(rtk proxy *)"
     ],
     "additionalDirectories": [
       "/tmp",

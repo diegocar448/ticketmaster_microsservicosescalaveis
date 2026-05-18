@@ -31,8 +31,10 @@ export class ReservationExpirationJob {
 
     this.logger.log('Iniciando job de expiração de reservas');
 
-    // cursor-based pagination — mais eficiente que OFFSET em tabelas grandes
-    while (true) {
+    // cursor-based pagination — mais eficiente que OFFSET em tabelas grandes.
+    // for(;;) em vez de while(true): mesma semântica, sem disparar
+    // no-unnecessary-condition (a saída é via break).
+    for (;;) {
       const expiredReservations = await this.prisma.reservation.findMany({
         where: {
           status: 'pending',
@@ -60,7 +62,9 @@ export class ReservationExpirationJob {
     }
 
     if (processedCount > 0) {
-      this.logger.log(`Job finalizado: ${processedCount} reservas expiradas`);
+      this.logger.log(
+        `Job finalizado: ${String(processedCount)} reservas expiradas`,
+      );
     }
   }
 
@@ -69,8 +73,8 @@ export class ReservationExpirationJob {
       items: Array<{ ticketBatchId: string; quantity: number }>;
     },
   ): Promise<void> {
-    if (!reservation) return;
-
+    // O tipo do parâmetro já garante reservation não-nulo (vem do for-loop
+    // sobre findMany) — guard removido por ser sempre falso (no-unnecessary-condition).
     await this.prisma.$transaction(async (tx) => {
       await tx.reservation.update({
         where: { id: reservation.id },

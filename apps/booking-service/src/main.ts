@@ -39,7 +39,7 @@ async function bootstrap(): Promise<void> {
 
   const port = parseInt(process.env['PORT'] ?? '3004', 10);
   await app.listen(port);
-  Logger.log(`Booking Service rodando na porta ${port}`);
+  Logger.log(`Booking Service rodando na porta ${String(port)}`);
   Logger.log('Kafka consumer ativo (events.ticket-batch-*)');
 }
 

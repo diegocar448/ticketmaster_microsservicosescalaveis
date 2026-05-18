@@ -28,6 +28,20 @@ import Stripe from 'stripe';
 import { KafkaProducerService } from '@showpass/kafka';
 import { KAFKA_TOPICS } from '@showpass/types';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import type { Prisma } from '../../prisma/generated/index.js';
+
+// Fail-fast de envs obrigatórios (substitui o non-null assertion `!`,
+// proibido pelo lint — e dá erro claro em vez de "invalid api key").
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`Variável de ambiente obrigatória ausente: ${name}`);
+  return v;
+}
+
+const STRIPE_SECRET_KEY = requireEnv('STRIPE_SECRET_KEY');
+const FRONTEND_URL = process.env['FRONTEND_URL'] ?? '';
+
+type OrderWithItems = Prisma.OrderGetPayload<{ include: { items: true } }>;
 
 // O Stripe 22 reorganizou as re-exportações: Stripe.Checkout.SessionCreateParams.LineItem
 // deixou de existir como tipo exportado. Derivamos o tipo a partir da assinatura
@@ -60,7 +74,7 @@ interface Reservation {
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
 
-  private readonly stripe = new Stripe(process.env['STRIPE_SECRET_KEY']!, {
+  private readonly stripe = new Stripe(STRIPE_SECRET_KEY, {
     // Omitir apiVersion faz o SDK usar a versão "pinned" do build (22.x).
     // Evita drift entre SDK e API surface.
   });
@@ -95,9 +109,14 @@ export class OrdersService {
     }
 
     // ─── 3. Totais ─────────────────────────────────────────────────────────────
-    // Não-null: já validamos length > 0 no fetchReservations.
-    const organizerId = reservations[0]!.organizerId;
-    const eventId = reservations[0]!.eventId;
+    // fetchReservations já garante length > 0; o guard abaixo satisfaz o
+    // type narrowing sem non-null assertion (proibido pelo lint).
+    const [first] = reservations;
+    if (!first) {
+      throw new BadRequestException('Nenhuma reserva fornecida');
+    }
+    const organizerId = first.organizerId;
+    const eventId = first.eventId;
 
     const subtotal = reservations.reduce(
       (s, r) =>
@@ -175,8 +194,8 @@ export class OrdersService {
         payment_method_types: ['card'],
         customer_email: buyer.email,
         line_items: lineItems,
-        success_url: `${process.env['FRONTEND_URL']}/checkout/success?order=${order.id}`,
-        cancel_url: `${process.env['FRONTEND_URL']}/checkout/cancel?order=${order.id}`,
+        success_url: `${FRONTEND_URL}/checkout/success?order=${order.id}`,
+        cancel_url: `${FRONTEND_URL}/checkout/cancel?order=${order.id}`,
         // Expira 30 min: dá folga para o comprador sem prender o lock Redis
         // (que em booking-service é de 15 min — o lock some antes da session)
         expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
@@ -214,11 +233,11 @@ export class OrdersService {
         { orderId: order.id, buyerId, organizerId, eventId, total },
         order.id,
       )
-      .catch((err) =>
+      .catch((err: unknown) => {
         this.logger.warn('Falha ao emitir order.created (best-effort)', {
           error: (err as Error).message,
-        }),
-      );
+        });
+      });
 
     this.logger.log('Checkout criado', { orderId: order.id, sessionId: session.id });
 
@@ -233,7 +252,10 @@ export class OrdersService {
    * Retorna o pedido — 404 (não 403) se não pertencer ao buyer.
    * OWASP A01: 403 revela que o recurso existe (IDOR probing).
    */
-  async getOrder(orderId: string, buyerId: string) {
+  async getOrder(
+    orderId: string,
+    buyerId: string,
+  ): Promise<OrderWithItems> {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: { items: true },
@@ -298,7 +320,9 @@ export class OrdersService {
           headers: authHeaders,
         });
         if (!res.ok) {
-          throw new BadRequestException(`Reserva ${id} inacessível (${res.status})`);
+          throw new BadRequestException(
+            `Reserva ${id} inacessível (${String(res.status)})`,
+          );
         }
         return (await res.json()) as Reservation;
       }),
