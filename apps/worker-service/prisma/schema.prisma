@@ -1,0 +1,129 @@
+// apps/worker-service/prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/prisma/generated"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Prisma 7: url foi movida para prisma.config.ts (defineConfig)
+}
+
+// ─── Ticket (owned pelo worker-service) ───────────────────────────────────────
+//
+// Source of truth dos ingressos emitidos. payment-service e booking-service
+// não escrevem aqui — só este serviço gera tickets, somente a partir de
+// payments.payment-confirmed.
+model Ticket {
+  id String @id @default(uuid()) @db.Uuid
+
+  // FKs lógicas (sem constraint cross-service)
+  orderId       String  @db.Uuid
+  buyerId       String  @db.Uuid
+  eventId       String  @db.Uuid
+  ticketBatchId String  @db.Uuid
+  seatId        String? @db.Uuid
+
+  // QR Code: payload completo assinado com HMAC-SHA256.
+  // Guardamos o JSON inteiro (~120 bytes) para revalidar no check-in
+  // sem precisar reconstruir o objeto a partir de partes.
+  qrCodePayload String
+
+  // Código humano (8 chars uppercase) — fácil de soletrar/exibir.
+  ticketCode String @db.Char(8)
+
+  // PDF: em dev, URL fake; em prod, S3 com lifecycle de 1 ano.
+  pdfUrl String?
+
+  // Marca o uso no check-in. NULL = ainda não usado.
+  // Tornar UNIQUE não é correto: se o ingresso for invalidado por refund,
+  // queremos manter histórico. Em vez disso, validateQrCode rejeita usedAt != null.
+  usedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // orderId não é unique: 1 order pode gerar N tickets (1 por item.quantity)
+  @@index([orderId])
+  @@index([buyerId])
+  @@index([eventId, usedAt])
+  @@map("tickets")
+}
+
+// ─── FailedJob (auditoria de DLQ) ─────────────────────────────────────────────
+//
+// Registro append-only de mensagens que esgotaram retries. Permite reprocessar
+// manualmente após corrigir o bug que causou a falha. Status muda apenas
+// pending_review → reprocessed (ou abandoned).
+model FailedJob {
+  id String @id @default(uuid()) @db.Uuid
+
+  topic        String // ex: "payments.payment-confirmed"
+  payload      Json // mensagem original — para reprocessamento
+  errorMessage String?
+  attempts     Int     @default(1)
+
+  status     String   @default("pending_review") // pending_review | reprocessed | abandoned
+  failedAt   DateTime @default(now())
+  reviewedAt DateTime?
+
+  @@index([topic, status])
+  @@index([failedAt])
+  @@map("failed_jobs")
+}
+
+// ─── Buyer (replicado de auth-service via Kafka) ──────────────────────────────
+//
+// Existe aqui para o e-mail (precisa do email + name) sem fazer round-trip HTTP
+// no path quente do consumer. Mesma semântica das réplicas em booking/payment.
+// passwordHash NUNCA trafega.
+model Buyer {
+  id    String  @id @db.Uuid
+  email String  @unique
+  name  String?
+
+  lastSyncAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("buyers")
+}
+
+// ─── Event (replicado de event-service via Kafka) ────────────────────────────
+//
+// Réplica local do título + venue para popular PDF e e-mail. Mesma estratégia
+// do booking-service (cap-06 Passo 6.11).
+model Event {
+  id          String @id @db.Uuid
+  organizerId String @db.Uuid
+
+  title String
+  slug  String @unique
+
+  startAt DateTime
+  endAt   DateTime
+
+  venueCity  String
+  venueState String
+
+  thumbnailUrl String?
+  lastSyncAt   DateTime @default(now())
+
+  @@map("events")
+}
+
+// ─── TicketBatch (replicado de event-service) ────────────────────────────────
+//
+// Apenas o nome — usado na descrição do PDF/e-mail ("Pista Premium", "Camarote").
+model TicketBatch {
+  id      String @id @db.Uuid
+  eventId String @db.Uuid
+  name    String
+
+  lastSyncAt DateTime @default(now())
+
+  @@index([eventId])
+  @@map("ticket_batches")
+}

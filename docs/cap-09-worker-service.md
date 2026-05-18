@@ -672,7 +672,8 @@ export class EmailService {
         <p>Os PDFs dos ingressos estão em anexo. Apresente o QR Code na entrada.</p>
       `,
       attachments: params.tickets.map((t, i) => ({
-        filename: `ingresso-${i + 1}-${t.ticketCode}.pdf`,
+        // String(i + 1): restrict-template-expressions proíbe number em template
+        filename: `ingresso-${String(i + 1)}-${t.ticketCode}.pdf`,
         content: t.pdfBuffer,
       })),
     });
@@ -933,16 +934,21 @@ export class PdfStorageService {
    * Em dev: retorna URL fake (não armazenamos de fato — economia de espaço).
    * Em prod: upload para S3 com cliente @aws-sdk/client-s3 (cap-16).
    *
+   * Retorno `Promise<string>` SEM `async` (a versão dev é síncrona; a versão
+   * S3 será de fato assíncrona sem mudar o contrato — evita `require-await`).
    * O contrato é estável: callers persistem só a URL no Ticket.pdfUrl.
    */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- pdfBuffer usado em prod
-  async upload(_pdfBuffer: Buffer, ticketId: string): Promise<string> {
+  upload(_pdfBuffer: Buffer, ticketId: string): Promise<string> {
     if (process.env['NODE_ENV'] !== 'production') {
-      return `https://storage.showpass.local/tickets/${ticketId}.pdf`;
+      return Promise.resolve(
+        `https://storage.showpass.local/tickets/${ticketId}.pdf`,
+      );
     }
 
     // TODO cap-16: PutObjectCommand + getSignedUrl com 7 dias de TTL
-    return `https://storage.showpass.com.br/tickets/${ticketId}.pdf`;
+    return Promise.resolve(
+      `https://storage.showpass.com.br/tickets/${ticketId}.pdf`,
+    );
   }
 }
 ```
@@ -966,8 +972,11 @@ import { KAFKA_TOPICS } from '@showpass/types';
 export class DlqAuditConsumer {
   private readonly logger = new Logger(DlqAuditConsumer.name);
 
+  // Sync (sem async/Promise<void>): não há await aqui → `async` dispararia
+  // require-await. Quando o cap-17 adicionar `await this.alerting.send(...)`,
+  // volta a ser `async onDlt(...): Promise<void>`.
   @EventPattern(`${KAFKA_TOPICS.PAYMENT_CONFIRMED}.dlt`)
-  async onDlt(@Payload() payload: unknown): Promise<void> {
+  onDlt(@Payload() payload: unknown): void {
     this.logger.error('DLT: payments.payment-confirmed.dlt', { payload });
     // cap-17: integração com Slack/PagerDuty
     // await this.alerting.send({ severity: 'high', payload, ... });

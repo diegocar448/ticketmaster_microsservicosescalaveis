@@ -529,6 +529,9 @@ importers:
       '@nestjs/platform-express':
         specifier: ^11.0.0
         version: 11.1.19(@nestjs/common@11.1.19(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.19)
+      '@prisma/adapter-pg':
+        specifier: ^7.7.0
+        version: 7.7.0
       '@prisma/client':
         specifier: ^7.0.0
         version: 7.7.0(prisma@7.7.0(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@6.0.2))(typescript@6.0.2)
@@ -538,6 +541,9 @@ importers:
       '@showpass/types':
         specifier: workspace:*
         version: link:../../packages/types
+      pg:
+        specifier: ^8.20.0
+        version: 8.20.0
       puppeteer:
         specifier: ^22.0.0
         version: 22.15.0(typescript@6.0.2)
@@ -560,9 +566,15 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.17
+      '@types/pg':
+        specifier: ^8.20.0
+        version: 8.20.0
       '@types/qrcode':
         specifier: ^1.5.0
         version: 1.5.6
+      dotenv:
+        specifier: ^17.4.2
+        version: 17.4.2
       prisma:
         specifier: ^7.0.0
         version: 7.7.0(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@6.0.2)
