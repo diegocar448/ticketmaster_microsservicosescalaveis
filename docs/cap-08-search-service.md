@@ -627,8 +627,12 @@ void bootstrap();
 > // devDependencies: "dotenv": "^17.4.2", "@swc-node/register": "^1.10.0"
 > ```
 >
-> **`tsconfig.json`:** adicione `"ignoreDeprecations": "6.0"` (TS 6 + `baseUrl`
-> emite `TS5101` e falha o `type-check`) — mesmo ajuste dos outros serviços.
+> **`tsconfig.json`:** **não** inclua `baseUrl` (nem `ignoreDeprecations`). O
+> projeto usa `moduleResolution: NodeNext` — `baseUrl` é ignorado na resolução
+> e só dispara o deprecation `TS5101` (que sob o TS pinado, 5.9.x, nem aceita
+> `ignoreDeprecations: "6.0"` → `TS5103`). O template correto por serviço tem
+> apenas `outDir`, `rootDir`, `experimentalDecorators`, `emitDecoratorMetadata`
+> (ver cap-05).
 
 ```typescript
 // apps/search-service/src/app.module.ts

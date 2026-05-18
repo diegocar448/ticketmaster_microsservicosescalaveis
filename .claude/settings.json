@@ -207,7 +207,13 @@
       "Bash(echo \"audit exit=$? \\(0 = sem high = CI verde\\)\")",
       "Bash(node -e \"const p=require\\('./apps/api-gateway/package.json'\\);console.log\\(JSON.stringify\\(p.dependencies,null,1\\)\\)\")",
       "Bash(echo \"audit exit=$? \\(0 = CI verde\\)\")",
-      "Bash(echo \"LINT exit=$? · $\\(grep -aoE 'Tasks: +[0-9]+ successful, [0-9]+ total' /tmp/showpass-logs/f-lint.log)"
+      "Bash(echo \"LINT exit=$? · $\\(grep -aoE 'Tasks: +[0-9]+ successful, [0-9]+ total' /tmp/showpass-logs/f-lint.log)",
+      "Bash(rtk git *)",
+      "Bash(git switch *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(gh auth *)"
     ],
     "additionalDirectories": [
       "/tmp",
