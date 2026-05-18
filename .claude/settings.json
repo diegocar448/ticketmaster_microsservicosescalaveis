@@ -197,7 +197,9 @@
       "Bash(echo \"pnpm-exit=$?\")",
       "Bash(node -e \"const p=require\\('./package.json'\\);console.log\\(JSON.stringify\\(p.scripts\\)\\)\")",
       "Bash(node -e 'const p=require\\('\\\\''./__TRACKED_VAR__'\\\\''\\);if\\(p.scripts&&p.scripts.lint\\)console.log\\('\\\\''__TRACKED_VAR__ →'\\\\'',p.scripts.lint\\)')",
-      "Bash(rtk proxy *)"
+      "Bash(rtk proxy *)",
+      "Bash(echo \"type-check exit=$?\")",
+      "Bash(echo \"lint exit=$?\")"
     ],
     "additionalDirectories": [
       "/tmp",
