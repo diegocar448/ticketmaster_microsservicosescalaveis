@@ -199,7 +199,15 @@
       "Bash(node -e 'const p=require\\('\\\\''./__TRACKED_VAR__'\\\\''\\);if\\(p.scripts&&p.scripts.lint\\)console.log\\('\\\\''__TRACKED_VAR__ →'\\\\'',p.scripts.lint\\)')",
       "Bash(rtk proxy *)",
       "Bash(echo \"type-check exit=$?\")",
-      "Bash(echo \"lint exit=$?\")"
+      "Bash(echo \"lint exit=$?\")",
+      "Bash(node -e \"const p=require\\('./package.json'\\);console.log\\(JSON.stringify\\({pnpm:p.pnpm,packageManager:p.packageManager},null,1\\)\\)\")",
+      "Bash(node -e \"const p=require\\('./apps/web/package.json'\\);console.log\\('next:',p.dependencies&&p.dependencies.next, '| deps:',Object.keys\\(p.dependencies||{}\\).join\\(','\\)\\)\")",
+      "Bash(echo \"install exit=$?\")",
+      "Bash(node -e \"for\\(const p of['axios','basic-ftp','fast-uri','next']\\){try{const P=require.resolve\\(p+'/package.json',{paths:['./apps/api-gateway','./apps/worker-service','./apps/web','.']}\\);console.log\\(p,'→',require\\(P\\).version\\)}catch\\(e\\){console.log\\(p,'\\(resolve via store\\)'\\)}}\")",
+      "Bash(echo \"audit exit=$? \\(0 = sem high = CI verde\\)\")",
+      "Bash(node -e \"const p=require\\('./apps/api-gateway/package.json'\\);console.log\\(JSON.stringify\\(p.dependencies,null,1\\)\\)\")",
+      "Bash(echo \"audit exit=$? \\(0 = CI verde\\)\")",
+      "Bash(echo \"LINT exit=$? · $\\(grep -aoE 'Tasks: +[0-9]+ successful, [0-9]+ total' /tmp/showpass-logs/f-lint.log)"
     ],
     "additionalDirectories": [
       "/tmp",
