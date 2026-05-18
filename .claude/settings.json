@@ -213,7 +213,22 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
-      "Bash(gh auth *)"
+      "Bash(gh auth *)",
+      "Bash(grep -aiE \"count|length|\\\\.size|total|nonce|Date.now|attempts|\\\\$\\\\{i\")",
+      "Bash(node -e \"console.log\\(JSON.stringify\\(require\\('./package.json'\\).pnpm.overrides\\)\\)\")",
+      "Bash(sed -n '1,12p' apps/booking-service/prisma/schema.prisma)",
+      "Bash(node -e \"const p=require\\('./apps/booking-service/package.json'\\);console.log\\(JSON.stringify\\({db:Object.fromEntries\\(Object.entries\\(p.scripts\\).filter\\(\\([k]\\)=>k.startsWith\\('db'\\)\\)\\),pa:p.dependencies['@prisma/adapter-pg'],pg:p.dependencies.pg,dotenv:p.devDependencies.dotenv},null,1\\)\\)\")",
+      "Bash(echo \"generate exit=$?\")",
+      "Bash(pnpm --filter @showpass/worker-service run type-check)",
+      "Bash(pnpm --filter @showpass/worker-service exec eslint src/)",
+      "Bash(echo \"LINT exit=$? \\(0=sem erro\\)\")",
+      "Bash(node -e \"const p=require\\('puppeteer'\\);console.log\\('execPath:', p.executablePath\\(\\)\\)\")",
+      "Bash(echo \"migrate exit=$?\")",
+      "Bash(node -e \"console.log\\(require\\('crypto'\\).randomUUID\\(\\)\\)\")",
+      "Bash(pkill -9 -f \"worker-service.*main.ts\")",
+      "Bash(node -e ' *)",
+      "Bash(grep -n 'ingresso-\\\\${i + 1}\\\\|async upload\\(\\\\|no-unused-vars -- pdfBuffer\\\\|async onDlt\\(' docs/cap-09-worker-service.md)",
+      "Bash(grep -n 'ingresso-${i + 1}' docs/cap-09-worker-service.md)"
     ],
     "additionalDirectories": [
       "/tmp",
