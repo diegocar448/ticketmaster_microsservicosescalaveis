@@ -180,7 +180,9 @@
       "Bash(pkill -9 -f \"@swc-node/register\")",
       "Bash(timeout 35 node --loader @swc-node/register/esm src/main.ts)",
       "Bash(echo \"exit=$? \\(124=timeout=ficou rodando=BOM; 1=crashou\\)\")",
-      "Bash(node -e \"fetch\\('http://localhost:9200/events/_mapping'\\).then\\(r=>r.json\\(\\)\\).then\\(j=>console.log\\(JSON.stringify\\(Object.keys\\(j.events?.mappings?.properties||{}\\)\\)\\)\\).catch\\(e=>console.log\\('ERR',e.message\\)\\)\")"
+      "Bash(node -e \"fetch\\('http://localhost:9200/events/_mapping'\\).then\\(r=>r.json\\(\\)\\).then\\(j=>console.log\\(JSON.stringify\\(Object.keys\\(j.events?.mappings?.properties||{}\\)\\)\\)\\).catch\\(e=>console.log\\('ERR',e.message\\)\\)\")",
+      "Bash(grep -aA 30 \"Payload inválido em EVENT_PUBLISHED\")",
+      "Bash(node -e \"fetch\\('http://localhost:9200/events/_delete_by_query?refresh=true',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify\\({query:{match:{slug:'lollapalooza'}}}\\)}\\).then\\(r=>r.json\\(\\)\\).then\\(j=>console.log\\('docs de teste removidos: '+\\(j.deleted!==undefined?j.deleted:JSON.stringify\\(j\\).slice\\(0,80\\)\\)\\)\\).catch\\(e=>console.log\\('skip',e.message\\)\\)\")"
     ],
     "additionalDirectories": [
       "/tmp",
