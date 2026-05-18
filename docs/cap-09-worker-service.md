@@ -456,6 +456,16 @@ export class TicketGeneratorService {
 
 ## Passo 9.3 — `PdfGeneratorService` (Puppeteer com Browser singleton)
 
+> **Atenção — `puppeteer` arrasta dependências vulneráveis (OWASP A06).**
+> Adicionar `puppeteer` ao `worker-service` puxa a cadeia
+> `puppeteer → @puppeteer/browsers → proxy-agent → pac-proxy-agent → get-uri
+> → basic-ftp`. O `basic-ftp` < 5.3.1 tem CVE **high** (DoS) e **faz o passo
+> `Security Audit` do CI falhar** (`pnpm audit --audit-level=high`). A correção
+> é o `pnpm.overrides` no `package.json` raiz (`"basic-ftp": ">=5.3.1"`) —
+> mesmo mecanismo do `tar`/`axios`. Ver **cap-15 → "Passando no gate
+> `pnpm audit`"**. Depois de adicionar puppeteer: `pnpm install` + confirmar
+> `pnpm audit --audit-level=high` (exit 0) e commitar o `pnpm-lock.yaml`.
+
 Puppeteer abre uma instância de Chromium headless por **chamada** se você
 não cuidar — cada launch leva ~1.5s e ~200MB de RAM. A solução é manter
 **um único Browser** vivo durante a vida do módulo, criando apenas `Page`s

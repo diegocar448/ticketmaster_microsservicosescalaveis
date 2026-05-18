@@ -213,7 +213,8 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
-      "Bash(gh auth *)"
+      "Bash(gh auth *)",
+      "Bash(grep -aiE \"count|length|\\\\.size|total|nonce|Date.now|attempts|\\\\$\\\\{i\")"
     ],
     "additionalDirectories": [
       "/tmp",
