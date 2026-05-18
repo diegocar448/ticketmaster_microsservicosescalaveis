@@ -187,8 +187,14 @@ export const EVENT_INDEX_MAPPING = {
       thumbnailUrl: { type: 'keyword', index: false }, // não indexar URLs
     },
   },
-} as const;
+};
 ```
+
+> **ES client v9 — tipagem estrita:** NÃO use `as const` aqui. O client
+> `@elastic/elasticsearch` v9 tipa o body de `indices.create` com uniões
+> discriminadas (`MappingProperty` por `type`). `as const` torna os arrays
+> `readonly` e quebra a atribuição (`filter: readonly [...]` ≠ `string[]`). O
+> objeto fica solto e fazemos **um único cast** no ponto de uso (Passo 8.2).
 
 > **Nota sobre geo:** o capítulo 5 do tutorial não inclui `latitude/longitude`
 > no schema de Event. Para habilitar busca por proximidade (`geo_distance`),
@@ -210,6 +216,7 @@ O índice precisa existir antes do consumer começar a indexar. Usar
 
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { ElasticsearchService } from '@nestjs/elasticsearch';
+import type { estypes } from '@elastic/elasticsearch';
 import { EVENT_INDEX, EVENT_INDEX_MAPPING } from './event-index.js';
 
 @Injectable()
@@ -227,10 +234,14 @@ export class IndexBootstrapService implements OnApplicationBootstrap {
 
     // Criar com mapping. Em produção, aliases + reindex zero-downtime
     // (ver runbooks/elasticsearch-reindex.md).
+    //
+    // O client ES v9 tipa o body com uniões discriminadas; objetos-literais
+    // largam para `string` e não casam. Um cast único para
+    // IndicesCreateRequest é o escape-hatch idiomático.
     await this.es.indices.create({
       index: EVENT_INDEX,
       ...EVENT_INDEX_MAPPING,
-    });
+    } as estypes.IndicesCreateRequest);
 
     this.logger.log(`Índice "${EVENT_INDEX}" criado com mapping`);
   }
@@ -247,9 +258,11 @@ score (relevância), `filter` não (cacheável).
 ```typescript
 // apps/search-service/src/modules/search/search.service.ts
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ElasticsearchService } from '@nestjs/elasticsearch';
-import type { SearchResponse } from '@elastic/elasticsearch/lib/api/types.js';
+// ES client v9: os tipos vêm do namespace `estypes` (o subpath
+// '@elastic/elasticsearch/lib/api/types.js' NÃO resolve sob NodeNext/ESM).
+import type { estypes } from '@elastic/elasticsearch';
 import { EVENT_INDEX } from './event-index.js';
 
 export interface SearchEventsParams {
@@ -277,8 +290,6 @@ export interface EventDocument {
 
 @Injectable()
 export class SearchService {
-  private readonly logger = new Logger(SearchService.name);
-
   constructor(private readonly es: ElasticsearchService) {}
 
   async searchEvents(params: SearchEventsParams): Promise<{
@@ -291,8 +302,8 @@ export class SearchService {
     const limit = Math.min(params.limit ?? 20, 100);
     const from = (page - 1) * limit;
 
-    const mustClauses: unknown[] = [];
-    const filterClauses: unknown[] = [];
+    const mustClauses: estypes.QueryDslQueryContainer[] = [];
+    const filterClauses: estypes.QueryDslQueryContainer[] = [];
 
     // ─── Busca textual (multi_match com pesos) ──────────────────────────────
     if (params.q) {
@@ -318,11 +329,22 @@ export class SearchService {
     // Apenas eventos em venda
     filterClauses.push({ term: { status: 'on_sale' } });
 
-    // Apenas eventos futuros (sempre — exclui eventos já encerrados)
-    const dateRange: Record<string, string> = { gte: new Date().toISOString() };
+    // Apenas eventos futuros (sempre — exclui eventos já encerrados).
+    // Objeto concreto (não Record) p/ permitir acesso por propriedade sob
+    // noPropertyAccessFromIndexSignature.
+    const dateRange: { gte: string; lte?: string } = {
+      gte: new Date().toISOString(),
+    };
     if (params.startAfter)  dateRange.gte = params.startAfter.toISOString();
     if (params.startBefore) dateRange.lte = params.startBefore.toISOString();
     filterClauses.push({ range: { startAt: dateRange } });
+
+    // Com q: relevância depois data. Sem q: só cronológico.
+    // ES v9 tipa `sort` estritamente — `_score` exige a forma objeto
+    // (ScoreSort), não o atalho string `'desc'`.
+    const sort: estypes.Sort = params.q
+      ? [{ _score: { order: 'desc' } }, { startAt: { order: 'asc' } }]
+      : [{ startAt: { order: 'asc' } }];
 
     // ─── Executar busca ─────────────────────────────────────────────────────
     const response = (await this.es.search<EventDocument>({
@@ -330,11 +352,8 @@ export class SearchService {
       from,
       size: limit,
       query: { bool: { must: mustClauses, filter: filterClauses } },
-      // Com q: ordena por relevância. Sem q: ordena por data (cronológico).
-      sort: params.q
-        ? [{ _score: 'desc' }, { startAt: 'asc' }]
-        : [{ startAt: 'asc' }],
-    })) as SearchResponse<EventDocument>;
+      sort,
+    })) as estypes.SearchResponse<EventDocument>;
 
     const total =
       typeof response.hits.total === 'number'
@@ -342,7 +361,9 @@ export class SearchService {
         : response.hits.total?.value ?? 0;
 
     return {
-      hits: response.hits.hits.map((h) => h._source as EventDocument),
+      hits: response.hits.hits.map(
+        (h: estypes.SearchHit<EventDocument>) => h._source as EventDocument,
+      ),
       total,
       page,
       limit,
@@ -363,10 +384,10 @@ export class SearchService {
         },
       },
       _source: ['title'],
-    })) as SearchResponse<EventDocument>;
+    })) as estypes.SearchResponse<EventDocument>;
 
     return response.hits.hits
-      .map((h) => h._source?.title ?? '')
+      .map((h: estypes.SearchHit<EventDocument>) => h._source?.title ?? '')
       .filter(Boolean);
   }
 }
@@ -521,7 +542,9 @@ export class SearchController {
    * GET /search/events?q=Bruno+Mars&city=São%20Paulo&page=1
    */
   @Get('events')
-  search(@Query(new ZodValidationPipe(SearchQuerySchema)) query: SearchQuery) {
+  search(
+    @Query(new ZodValidationPipe(SearchQuerySchema)) query: SearchQuery,
+  ): ReturnType<SearchService['searchEvents']> {
     return this.searchService.searchEvents({
       ...(query.q          !== undefined ? { q:           query.q          } : {}),
       ...(query.city       !== undefined ? { city:        query.city       } : {}),
@@ -591,7 +614,21 @@ void bootstrap();
 
 ---
 
-## Passo 8.7 — `AppModule`, `.env` e Makefile
+## Passo 8.7 — Dependências, `AppModule`, `.env` e Makefile
+
+> **Dependências (corrigir o scaffold):** o `apps/search-service/package.json`
+> nasceu sem `@nestjs/elasticsearch` e com `@elastic/elasticsearch@^8`. O
+> servidor é **ES 9.3** — alinhe o client major:
+>
+> ```jsonc
+> // apps/search-service/package.json (dependencies)
+> "@elastic/elasticsearch": "^9.0.0",
+> "@nestjs/elasticsearch": "^11.0.0",
+> // devDependencies: "dotenv": "^17.4.2", "@swc-node/register": "^1.10.0"
+> ```
+>
+> **`tsconfig.json`:** adicione `"ignoreDeprecations": "6.0"` (TS 6 + `baseUrl`
+> emite `TS5101` e falha o `type-check`) — mesmo ajuste dos outros serviços.
 
 ```typescript
 // apps/search-service/src/app.module.ts
@@ -692,10 +729,24 @@ docker compose up -d
 # Aguardar Elasticsearch inicializar
 curl -s http://localhost:9200/_cluster/health | jq .status   # "yellow" ou "green"
 
+# PRÉ-REQUISITO OBRIGATÓRIO — criar os tópicos Kafka ANTES de subir o serviço.
+# O consumer roda com allowAutoTopicCreation:false; se subir antes de
+# events.event-published/updated/cancelled existirem, o KafkaJS lança
+# UNKNOWN_TOPIC_OR_PARTITION e DERRUBA o processo no boot.
+./scripts/kafka-topics.sh                 # idempotente — cria os 17 tópicos
+
 # Terminal 2 — serviços (auth + event + search)
 make dev-services        # adicione search-service ao scripts/dev.sh
 make dev-status          # confirme bolinhas verdes
 ```
+
+> **Gotcha de infra (WSL/dev):** o Elasticsearch só fica acessível em
+> `localhost:9200` se estiver na rede `public`. A rede `data` do
+> `docker-compose.yml` é `internal: true` (bloqueia port binding — correto
+> para prod). O `docker-compose.override.yml` adiciona `postgres`, `redis`,
+> `kafka` **e `elasticsearch`** à rede `public` para o dev no host. Sem o
+> bloco `elasticsearch:` no override, `docker compose ps` mostra a 9200 com
+> `HostPort 0` (não publicada) e o search-service não conecta.
 
 ### Passo a passo
 

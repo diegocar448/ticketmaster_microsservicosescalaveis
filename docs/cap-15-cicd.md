@@ -6,9 +6,18 @@
 
 ## Passo 15.1 — Pipeline Principal
 
+> **Este capítulo EDITA o `.github/workflows/ci.yml` existente** (criado no
+> Cap 1, expandido nos caps 2 e 14). Não criamos um workflow novo — mantemos
+> `name: CI` para que os *required status checks* continuem válidos.
+>
+> **Gotcha load-bearing:** os nomes dos jobs (`name:`) são referenciados em
+> `.github/branch-protection.sh` (`required_status_checks`). **Renomear um job
+> sem atualizar esse script quebra o merge de todos os PRs.** Por isso o job de
+> qualidade continua `Lint & Type Check`.
+
 ```yaml
 # .github/workflows/ci.yml
-name: CI/CD
+name: CI
 
 on:
   push:
@@ -16,21 +25,30 @@ on:
   pull_request:
     branches: [main]
 
+# Cancela runs anteriores do MESMO ref (economiza minutos do Actions).
+# O job `deploy` sobrescreve isso com a sua própria concurrency (não cancelar
+# deploy em andamento) — ver mais abaixo.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   AWS_REGION: us-east-1
   ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
 
 jobs:
   # ─── 1. Qualidade de Código ────────────────────────────────────────────────
+  # NÃO renomear "Lint & Type Check" — referenciado em branch-protection.sh
   quality:
     name: Lint & Type Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      # pnpm/action-setup@v4 lê a versão do campo "packageManager" do
+      # package.json. NÃO declarar `with: version:` aqui — duas fontes de
+      # versão causam ERR_PNPM_BAD_PM_VERSION.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -39,6 +57,15 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Cache Turborepo
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-
+
+      # Scripts do package.json raiz delegam ao Turborepo (turbo run X)
       - run: pnpm run lint
       - run: pnpm run type-check
 
@@ -47,6 +74,7 @@ jobs:
         run: pnpm audit --audit-level=high
 
   # ─── 2. Testes ────────────────────────────────────────────────────────────
+  # NÃO renomear "Tests" — referenciado em branch-protection.sh
   test:
     name: Tests
     runs-on: ubuntu-latest
@@ -71,9 +99,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      - uses: pnpm/action-setup@v4   # sem version: (lê de packageManager)
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -87,7 +113,7 @@ jobs:
           DATABASE_URL: postgresql://test:test@localhost:5432/showpass_test
 
       - name: Unit & Integration Tests
-        run: pnpm run test --coverage
+        run: pnpm run test
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/showpass_test
           REDIS_URL: redis://localhost:6379
@@ -105,7 +131,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     strategy:
       matrix:
-        service: [api-gateway, event-service, booking-service, payment-service, search-service, worker-service, web]
+        service: [api-gateway, auth-service, event-service, booking-service, payment-service, search-service, worker-service, web]
 
     steps:
       - uses: actions/checkout@v4
@@ -121,12 +147,17 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push Docker image
+      # UM único bloco env: por step (duas chaves `env:` no mesmo step é YAML
+      # inválido — a segunda sobrescreveria a primeira, perdendo IMAGE_TAG).
+      - name: Build, sign, and push Docker image
         env:
           IMAGE_TAG: ${{ github.sha }}
           SERVICE: ${{ matrix.service }}
+          COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         run: |
-          # Build multi-stage (prod stage)
+          # Build multi-stage (stage prod). O Dockerfile compartilhado usa
+          # ARG SERVICE_NAME para selecionar o serviço.
           docker build \
             --build-arg SERVICE_NAME=$SERVICE \
             --target prod \
@@ -136,15 +167,14 @@ jobs:
             --file infra/docker/nestjs.Dockerfile \
             .
 
-          # Assinar a imagem com Cosign (OWASP A08)
-          cosign sign --key env://COSIGN_KEY \
-            $ECR_REGISTRY/showpass-$SERVICE:$IMAGE_TAG
-
-          # Push
+          # Push ANTES de assinar — Cosign assina por digest no registry
           docker push $ECR_REGISTRY/showpass-$SERVICE:$IMAGE_TAG
           docker push $ECR_REGISTRY/showpass-$SERVICE:latest
-        env:
-          COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+
+          # Assinatura keyed (OWASP A08). Mesma chave usada no `cosign verify`
+          # (ver "Testando na prática"). ECR — não ghcr.
+          cosign sign --yes --key env://COSIGN_KEY \
+            $ECR_REGISTRY/showpass-$SERVICE:$IMAGE_TAG
 
   # ─── 4. Deploy no EKS ─────────────────────────────────────────────────────
   deploy:
@@ -152,9 +182,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     environment: production
+    # Sobrescreve a concurrency do workflow: nunca cancelar deploy em andamento
     concurrency:
       group: production-deploy
-      cancel-in-progress: false  # nunca cancelar um deploy em andamento
+      cancel-in-progress: false
 
     steps:
       - uses: actions/checkout@v4
@@ -175,11 +206,11 @@ jobs:
       - name: Update image tags in Kustomize
         run: |
           cd infra/k8s/overlays/production
-          kustomize edit set image \
-            showpass-api-gateway=$ECR_REGISTRY/showpass-api-gateway:${{ github.sha }} \
-            showpass-event-service=$ECR_REGISTRY/showpass-event-service:${{ github.sha }} \
-            showpass-booking-service=$ECR_REGISTRY/showpass-booking-service:${{ github.sha }}
-          # ... outros serviços
+          for svc in api-gateway auth-service event-service booking-service \
+                     payment-service search-service worker-service web; do
+            kustomize edit set image \
+              showpass-$svc=$ECR_REGISTRY/showpass-$svc:${{ github.sha }}
+          done
 
       - name: Deploy
         run: |
@@ -187,57 +218,61 @@ jobs:
 
       - name: Aguardar rollout
         run: |
-          kubectl rollout status deployment/api-gateway -n showpass --timeout=300s
-          kubectl rollout status deployment/event-service -n showpass --timeout=300s
-          kubectl rollout status deployment/booking-service -n showpass --timeout=300s
+          # Nomes dos Deployments == nomes dos serviços (ver cap-16)
+          for d in api-gateway event-service booking-service payment-service; do
+            kubectl rollout status deployment/$d -n showpass --timeout=300s
+          done
 
       - name: Smoke test pós-deploy
         run: |
+          # /health/ready é agregado pelo api-gateway (checa event + booking)
           curl -sf https://api.showpass.com.br/health/ready | grep '"status":"ok"'
 ```
 
 ---
 
-## Passo 15.2 — PR Checks
+## Passo 15.2 — Testes seletivos por PR
+
+> O repositório **já tem** `.github/workflows/pr-title.yml` (criado no Cap 1):
+> valida que o título do PR segue Conventional Commits via
+> `amannn/action-semantic-pull-request`. **Não o substitua** — ele tem outro
+> propósito. Adicionamos um workflow *separado* para testes seletivos.
+
+`pnpm turbo run test --filter="...[origin/main]"` roda apenas os pacotes
+afetados pela PR (e seus dependentes), aproveitando o cache do Turborepo —
+muito mais rápido que rodar tudo:
 
 ```yaml
-# .github/workflows/pr-checks.yml
-name: PR Checks
+# .github/workflows/pr-selective-tests.yml
+name: PR Selective Tests
 
 on:
   pull_request:
     branches: [main]
 
 jobs:
-  changed-services:
-    name: Detectar serviços alterados
-    runs-on: ubuntu-latest
-    outputs:
-      services: ${{ steps.filter.outputs.changes }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            booking-service:
-              - 'apps/booking-service/**'
-            event-service:
-              - 'apps/event-service/**'
-            shared:
-              - 'packages/**'
-
-  # Rodar testes apenas dos serviços afetados pela PR (Turborepo cache)
   selective-tests:
     name: Testes seletivos
     runs-on: ubuntu-latest
-    needs: changed-services
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+        with:
+          # fetch-depth: 0 — o filtro "[origin/main]" precisa do histórico
+          # para calcular o diff de pacotes afetados
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4   # sem version: (lê de packageManager)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm turbo run test --filter="...[origin/main]"
 ```
+
+> **Por que um workflow separado e não um job em `ci.yml`?** O `ci.yml` roda
+> a suíte completa (required check, bloqueia o merge). Este é um sinal
+> *rápido* e informativo durante a revisão — não required, não acoplado ao
+> `branch-protection.sh`.
 
 ---
 
@@ -261,17 +296,21 @@ Abra o PR no GitHub. A interface do Actions deve aparecer com os checks rodando.
 
 **2. Acompanhar o pipeline no GitHub Actions**
 
-Acesse a aba "Actions" do repositório. Você verá os jobs em paralelo:
+Acesse a aba "Actions" do repositório. Em PR, rodam `quality` → `test`
+sequencialmente (`test` tem `needs: quality`):
 
 ```
-build-and-test (matrix)
-  ├── auth-service      [running...]
-  ├── event-service     [running...]
-  ├── booking-service   [running...]
-  └── payment-service   [running...]
+CI
+  ├── Lint & Type Check    [running...]   (job: quality)
+  └── Tests                [waiting]      (job: test, needs: quality)
+PR Selective Tests
+  └── Testes seletivos     [running...]   (turbo --filter=...[origin/main])
+PR Title Check
+  └── check-title          [passed]       (Conventional Commits)
 ```
 
-Cada job: instala dependências, gera Prisma client, roda lint + type-check + testes.
+Os jobs `build` (matrix de 8 serviços) e `deploy` só rodam **após merge na
+`main`** (`if: github.ref == 'refs/heads/main'`), não em PR.
 
 **3. Verificar que o Turborepo remote cache foi usado**
 
@@ -301,19 +340,23 @@ error  Unexpected console statement  no-console
 
 O PR fica bloqueado pela branch protection rule — não é possível fazer merge com check falhando.
 
-**5. Verificar assinatura da imagem Docker (em deploy)**
+**5. Verificar assinatura da imagem Docker (após merge na main)**
 
-Após merge na `main`, o pipeline de deploy gera e assina a imagem com Cosign:
+O job `build` assina cada imagem no **ECR** com a chave Cosign
+(`cosign sign --key`). A verificação usa a **chave pública** correspondente
+(modelo *keyed* — o mesmo dos dois lados, não keyless OIDC):
 
 ```bash
-# Verificar assinatura de uma imagem publicada
+# COSIGN_PUBLIC_KEY = par público da COSIGN_PRIVATE_KEY usada no CI
+ECR=123456789.dkr.ecr.us-east-1.amazonaws.com
+
 cosign verify \
-  --certificate-identity "https://github.com/<org>/showpass/.github/workflows/ci.yml@refs/heads/main" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  ghcr.io/<org>/showpass/booking-service:latest
+  --key env://COSIGN_PUBLIC_KEY \
+  $ECR/showpass-booking-service:<sha-do-commit>
 ```
 
-O K8s rejeita imagens sem assinatura válida (admission webhook).
+O K8s rejeita imagens sem assinatura válida (admission webhook — Kyverno/
+Sigstore policy controller, configurado no cap-16).
 
 **6. Verificar que só o serviço alterado foi testado (Turborepo affected)**
 
