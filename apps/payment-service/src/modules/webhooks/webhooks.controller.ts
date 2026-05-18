@@ -34,12 +34,19 @@ import { KafkaProducerService } from '@showpass/kafka';
 import { KAFKA_TOPICS } from '@showpass/types';
 import { PrismaService } from '../../prisma/prisma.service.js';
 
+// Fail-fast de envs obrigatórios (substitui non-null assertion `!`).
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`Variável de ambiente obrigatória ausente: ${name}`);
+  return v;
+}
+
 @Controller('webhooks')
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);
 
-  private readonly stripe = new Stripe(process.env['STRIPE_SECRET_KEY']!);
-  private readonly webhookSecret = process.env['STRIPE_WEBHOOK_SECRET']!;
+  private readonly stripe = new Stripe(requireEnv('STRIPE_SECRET_KEY'));
+  private readonly webhookSecret = requireEnv('STRIPE_WEBHOOK_SECRET');
 
   constructor(
     private readonly prisma: PrismaService,
@@ -180,7 +187,9 @@ export class WebhooksController {
   }
 
   private async handlePaymentFailed(paymentIntent: Stripe.PaymentIntent): Promise<void> {
-    const orderId = paymentIntent.metadata?.['order_id'];
+    // Stripe.PaymentIntent.metadata é sempre presente (Stripe.Metadata),
+    // não nullable — optional chain era desnecessário (no-unnecessary-condition).
+    const orderId = paymentIntent.metadata['order_id'];
     if (!orderId) return;
 
     const order = await this.prisma.order.findFirst({
@@ -222,7 +231,8 @@ export class WebhooksController {
   }
 
   private async handleRefunded(charge: Stripe.Charge): Promise<void> {
-    const orderId = charge.metadata?.['order_id'];
+    // Stripe.Charge.metadata é sempre presente (Stripe.Metadata), não nullable.
+    const orderId = charge.metadata['order_id'];
     if (!orderId) return;
 
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });

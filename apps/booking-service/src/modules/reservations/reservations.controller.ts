@@ -36,7 +36,7 @@ export class ReservationsController {
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(CreateReservationSchema)) dto: CreateReservationDto,
-  ) {
+  ): ReturnType<ReservationsService['create']> {
     return this.reservationsService.create(user.id, dto);
   }
 
@@ -62,10 +62,13 @@ export class ReservationsController {
    */
   @Get(':id')
   @UseGuards(BuyerGuard)
+  // Retorno é fronteira HTTP (JSON serializado): o corpo permanece
+  // estritamente tipado; anotamos unknown só para satisfazer
+  // explicit-function-return-type sem duplicar o shape enriquecido inline.
   async findOne(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthenticatedUser,
-  ) {
+  ): Promise<unknown> {
     const reservation = await this.prisma.reservation.findUnique({
       where: { id },
       include: { items: true },
@@ -122,7 +125,7 @@ export class ReservationsController {
   cancel(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthenticatedUser,
-  ) {
+  ): ReturnType<ReservationsService['cancel']> {
     return this.reservationsService.cancel(id, user.id);
   }
 
@@ -134,7 +137,7 @@ export class ReservationsController {
   getAvailability(
     @Param('eventId', ParseUUIDPipe) eventId: string,
     @Body('seatIds') seatIds: string[],
-  ) {
+  ): ReturnType<SeatLockService['checkAvailability']> {
     return this.seatLock.checkAvailability(eventId, seatIds);
   }
 }

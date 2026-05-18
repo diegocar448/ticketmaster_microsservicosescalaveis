@@ -20,5 +20,5 @@ COPY --from=builder /app/apps/search-service/package.json ./
 COPY --from=builder /app/node_modules ./node_modules
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 USER appuser
-EXPOSE 3006
+EXPOSE 3005
 CMD ["node", "dist/main.js"]

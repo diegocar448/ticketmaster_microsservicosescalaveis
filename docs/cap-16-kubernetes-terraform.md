@@ -4,6 +4,19 @@
 
 ## Passo 16.1 — Deployment do Booking Service (K8s)
 
+> **Porta do booking-service = `3004`** (o Dockerfile faz `EXPOSE 3004`; o
+> api-gateway checa `http://booking-service:3004/health/live`). Não confundir
+> com `3003`, que é o event-service.
+>
+> **Pré-requisito — `/health/ready` no booking-service:** o `readinessProbe`
+> abaixo usa `/health/ready`. Hoje o booking-service só expõe `/health/live`.
+> Antes de aplicar este manifesto, adicione um `@Get('ready')` ao
+> `health.controller.ts` do booking-service que cheque dependências (Redis +
+> Postgres) — exatamente o padrão que o api-gateway já usa no seu
+> `/health/ready` agregado. `live` = "o processo está vivo"; `ready` = "consigo
+> atender tráfego" (deps OK). Sem essa distinção, o K8s manda tráfego para um
+> pod que ainda não conectou no Redis.
+
 ```yaml
 # infra/k8s/base/booking-service/deployment.yaml
 apiVersion: apps/v1
@@ -30,25 +43,29 @@ spec:
         app: booking-service
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "3003"
+        prometheus.io/port: "3004"
         prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: booking-service-sa
-      # Não rodar como root (OWASP A05)
+      # Não rodar como root (OWASP A05).
+      # A imagem (infra/docker/nestjs.Dockerfile) cria o usuário `appuser` via
+      # `adduser -S` — UID atribuído pelo Alpine, NÃO 1000. Por isso NÃO
+      # fixamos runAsUser/fsGroup numéricos (causaria mismatch com o filesystem
+      # da imagem). `runAsNonRoot: true` já garante a invariante de segurança;
+      # o USER do Dockerfile é honrado. Para pinar UID, o Dockerfile teria que
+      # criar o usuário com `adduser -u 1000`.
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
       containers:
         - name: booking-service
           image: showpass-booking-service:latest  # sobrescrito pelo Kustomize
           ports:
-            - containerPort: 3003
+            - containerPort: 3004
           env:
             - name: NODE_ENV
               value: production
             - name: PORT
-              value: "3003"
+              value: "3004"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -75,13 +92,13 @@ spec:
           livenessProbe:
             httpGet:
               path: /health/live
-              port: 3003
+              port: 3004
             initialDelaySeconds: 10
             periodSeconds: 10
           readinessProbe:
             httpGet:
-              path: /health/ready
-              port: 3003
+              path: /health/ready   # ver pré-requisito no topo deste passo
+              port: 3004
             initialDelaySeconds: 5
             periodSeconds: 5
           # Graceful shutdown: aguardar requests em andamento finalizarem
@@ -183,6 +200,38 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/resources/limits/memory
         value: "1Gi"
+```
+
+E o overlay de **staging** — usado nos testes locais com `kind` (Passo
+"Testando na prática"). Mesmo `base`, menos réplicas, imagens sem ECR
+(carregadas direto no kind):
+
+```yaml
+# infra/k8s/overlays/staging/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: showpass
+
+resources:
+  - ../../base
+
+# Em kind, as imagens são carregadas localmente (kind load docker-image),
+# então mantemos o nome local sem o registry ECR.
+images:
+  - name: showpass-booking-service
+    newName: showpass-booking-service
+    newTag: latest
+
+# Staging: 1 réplica por serviço (economia de recursos no cluster local)
+patches:
+  - target:
+      kind: Deployment
+      name: booking-service
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
 ```
 
 ---
@@ -362,20 +411,29 @@ kubectl get pods -n showpass
 Saída esperada:
 
 ```
-NAME                               READY   STATUS    RESTARTS
+NAME                              READY   STATUS    RESTARTS
 booking-service-7d9f8b6b5-xkp2q   1/1     Running   0
-booking-service-7d9f8b6b5-mntv7   1/1     Running   0
 ```
+
+> O overlay de staging usa `replicas: 1` (Passo 16.3) — por isso um único
+> pod. Em produção o overlay sobe mais réplicas e o HPA assume o controle.
 
 **4. Verificar o RollingUpdate**
 
-Atualize a imagem para simular um deploy:
+Em `kind` a imagem é local (carregada via `kind load docker-image
+showpass-booking-service:v2 --name showpass`). Simule o deploy de uma nova
+tag:
 
 ```bash
 kubectl set image deployment/booking-service \
-  booking-service=ghcr.io/<org>/showpass/booking-service:v2 \
+  booking-service=showpass-booking-service:v2 \
   -n showpass
 ```
+
+> Em produção (não-kind), a imagem viria do ECR
+> (`$ECR/showpass-booking-service:<sha>`) e o `kubectl set image` é feito
+> pelo job `deploy` do `ci.yml` via `kustomize edit set image` (cap-15) —
+> nunca manualmente.
 
 Observe o rollout sem downtime:
 
@@ -386,6 +444,23 @@ kubectl rollout status deployment/booking-service -n showpass
 ```
 
 **5. Testar o HPA (escalonamento automático)**
+
+> **Pré-requisito — `Service`:** `http://booking-service/...` resolve via um
+> `Service` ClusterIP chamado `booking-service` (porta 80 → `targetPort: 3004`).
+> O `base/` precisa de um `service.yaml` por serviço além do `deployment.yaml`:
+> ```yaml
+> # infra/k8s/base/booking-service/service.yaml
+> apiVersion: v1
+> kind: Service
+> metadata: { name: booking-service, namespace: showpass }
+> spec:
+>   selector: { app: booking-service }
+>   ports: [{ port: 80, targetPort: 3004 }]
+> ```
+> Sem o Service, o `wget http://booking-service/...` abaixo falha com DNS.
+> O HPA também precisa do **metrics-server** instalado no kind
+> (`kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml`
+> com `--kubelet-insecure-tls` em ambiente local).
 
 ```bash
 # Verificar estado do HPA

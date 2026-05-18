@@ -31,7 +31,7 @@ export class OrdersController {
     @Body(new ZodValidationPipe(CreateOrderSchema)) dto: CreateOrderDto,
     @CurrentUser() user: AuthenticatedUser,
     @Req() req: Request,
-  ) {
+  ): ReturnType<OrdersService['createCheckout']> {
     // Repassa os headers x-user-* do gateway para o booking-service validar
     // a reserva também (defesa em profundidade — não confiamos só no gateway)
     const authHeaders: Record<string, string> = {
@@ -48,7 +48,7 @@ export class OrdersController {
   async findOne(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthenticatedUser,
-  ) {
+  ): ReturnType<OrdersService['getOrder']> {
     return this.orders.getOrder(id, user.id);
   }
 }

@@ -19,7 +19,11 @@ import { HealthModule } from './modules/health/health.module.js';
     RedisModule.forRoot({
       host: process.env['REDIS_HOST'] ?? 'localhost',
       port: parseInt(process.env['REDIS_PORT'] ?? '6379', 10),
-      password: process.env['REDIS_PASSWORD'],
+      // exactOptionalPropertyTypes: omitir a chave quando ausente em vez de
+      // passar `undefined` explícito (password?: string não aceita undefined).
+      ...(process.env['REDIS_PASSWORD']
+        ? { password: process.env['REDIS_PASSWORD'] }
+        : {}),
     }),
     // Kafka global — ReservationsService injeta KafkaProducerService
     KafkaModule.forRoot({

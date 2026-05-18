@@ -32,6 +32,18 @@ services:
     ports:
       - "6379:6379"
 
+  elasticsearch:
+    # Mesmo motivo do postgres/redis: a rede `data` (internal) bloqueia o
+    # port binding no host. O search-service (cap-08) roda NO HOST em dev e
+    # conecta via ELASTICSEARCH_NODE=http://localhost:9200 — sem este bloco
+    # a porta 9200 fica com HostPort 0 (não publicada) e o serviço/curl/
+    # DBeaver não alcançam o Elasticsearch.
+    networks:
+      - public
+      - data
+    ports:
+      - "9200:9200"
+
   kafka:
     # Porta 29092 para clientes no HOST (serviços NestJS em dev).
     # Porta 9092 permanece para comunicação container-to-container (kafka-ui etc.).

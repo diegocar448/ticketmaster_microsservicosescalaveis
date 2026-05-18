@@ -66,6 +66,7 @@ export class TicketBatchesService {
     this.logger.log(`TicketBatch criado: id=${batch.id}, eventId=${eventId}`);
 
     // Remove organizerId (interno) do retorno público — só precisava para o Kafka
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructuring para omitir organizerId do payload público
     const { organizerId: _ignored, ...publicBatch } = batch;
     return publicBatch;
   }
@@ -108,6 +109,7 @@ export class TicketBatchesService {
 
     this.logger.log(`TicketBatch atualizado: id=${batchId}`);
 
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructuring para omitir organizerId do payload público
     const { organizerId: _ignored, ...publicBatch } = updated;
     return publicBatch;
   }

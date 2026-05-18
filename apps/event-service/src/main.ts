@@ -41,7 +41,7 @@ async function bootstrap(): Promise<void> {
 
   const port = parseInt(process.env['PORT'] ?? '3003', 10);
   await app.listen(port);
-  Logger.log(`Event Service rodando na porta ${port}`);
+  Logger.log(`Event Service rodando na porta ${String(port)}`);
   Logger.log('Kafka consumer ativo (auth.organizer-*)');
 }
 
