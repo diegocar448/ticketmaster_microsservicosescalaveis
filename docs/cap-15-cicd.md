@@ -231,6 +231,42 @@ jobs:
 
 ---
 
+### Passando no gate `pnpm audit --audit-level=high` (OWASP A06)
+
+`pnpm audit` consulta a base de advisories **ao vivo** — vulnerabilidades
+recém-publicadas em deps transitivas fazem o gate falhar sem nenhuma mudança
+no código. O job só quebra em severidade **high** (`--audit-level=high`);
+moderate/low não bloqueiam.
+
+A correção é forçar versões corrigidas via **`pnpm.overrides`** no
+`package.json` raiz (mesmo mecanismo do `tar`):
+
+```jsonc
+// package.json (raiz)
+"pnpm": {
+  "overrides": {
+    "tar": ">=7.5.11",
+    "axios": "^1.16.1",
+    "basic-ftp": ">=5.3.1",
+    "fast-uri": ">=3.1.2",
+    "next": ">=16.2.6"
+  }
+}
+```
+
+> **Peer dependency não respeita override de range.** `axios` é *peer* de
+> `@nestjs/axios` (usado por `@nestjs/terminus` no api-gateway). O override
+> sozinho não re-resolve o lockfile (fica preso na versão antiga). Solução:
+> declarar `axios` como **dependência direta** de `apps/api-gateway`
+> (`"axios": "^1.16.1"`) — aí o `@nestjs/axios` usa a versão patcheada.
+>
+> Depois de mexer em overrides/deps: `pnpm install` (regenera o
+> `pnpm-lock.yaml`) e confirme com `pnpm audit --audit-level=high` (exit 0 =
+> zero high). O lockfile atualizado **tem que entrar no commit** — o CI usa
+> `--frozen-lockfile`.
+
+---
+
 ## Passo 15.2 — Testes seletivos por PR
 
 > O repositório **já tem** `.github/workflows/pr-title.yml` (criado no Cap 1):

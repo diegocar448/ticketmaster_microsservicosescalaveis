@@ -307,7 +307,13 @@ export class ReservationsService {
    * 5. Se o DB falhar → liberar locks Redis (compensação)
    * 6. Emitir evento Kafka
    */
-  async create(buyerId: string, dto: CreateReservationDto) {
+  // explicit-function-return-type: anotar o retorno. ReservationWithItems =
+  // Prisma.ReservationGetPayload<{ include: { items: true } }> (mesmo include
+  // da transação) — importe `Prisma` de '../../prisma/generated/index.js'.
+  async create(
+    buyerId: string,
+    dto: CreateReservationDto,
+  ): Promise<ReservationWithItems> {
     // ─── 1. Verificar status do evento ────────────────────────────────────────
     // Buscar dados do evento via HTTP para o event-service
     // (em produção: HTTP com cache curto de 30s para não sobrecarregar)
@@ -491,7 +497,7 @@ export class ReservationsService {
         const available = batch.totalQuantity - batch.soldCount - batch.reservedCount;
         if (available < item.quantity) {
           throw new ConflictException(
-            `Lote "${batch.name}" não tem ingressos suficientes. Disponíveis: ${available}`,
+            `Lote "${batch.name}" não tem ingressos suficientes. Disponíveis: ${String(available)}`,
           );
         }
 
@@ -546,8 +552,10 @@ export class ReservationExpirationJob {
 
     this.logger.log('Iniciando job de expiração de reservas');
 
-    // cursor-based pagination — mais eficiente que OFFSET em tabelas grandes
-    while (true) {
+    // cursor-based pagination — mais eficiente que OFFSET em tabelas grandes.
+    // for(;;) em vez de while(true): mesma semântica, sem disparar
+    // no-unnecessary-condition (a saída é via break).
+    for (;;) {
       const expiredReservations = await this.prisma.reservation.findMany({
         where: {
           status: 'pending',
@@ -575,7 +583,9 @@ export class ReservationExpirationJob {
     }
 
     if (processedCount > 0) {
-      this.logger.log(`Job finalizado: ${processedCount} reservas expiradas`);
+      this.logger.log(
+        `Job finalizado: ${String(processedCount)} reservas expiradas`,
+      );
     }
   }
 
@@ -584,8 +594,8 @@ export class ReservationExpirationJob {
       items: Array<{ ticketBatchId: string; quantity: number }>;
     },
   ): Promise<void> {
-    if (!reservation) return;
-
+    // O tipo do parâmetro já garante reservation não-nulo (vem do for-loop
+    // sobre findMany) — guard removido por ser sempre falso (no-unnecessary-condition).
     await this.prisma.$transaction(async (tx) => {
       await tx.reservation.update({
         where: { id: reservation.id },
@@ -652,12 +662,14 @@ export class ReservationsController {
    * Criar reserva — requer buyer autenticado.
    * Retorna 409 se assentos não estão disponíveis (com lista dos indisponíveis).
    */
+  // explicit-function-return-type: controllers anotam com
+  // ReturnType<Service['metodo']> (delega o tipo ao service).
   @Post()
   @UseGuards(BuyerGuard)
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(CreateReservationSchema)) dto: CreateReservationDto,
-  ) {
+  ): ReturnType<ReservationsService['create']> {
     return this.reservationsService.create(user.id, dto);
   }
 
@@ -670,7 +682,7 @@ export class ReservationsController {
   cancel(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthenticatedUser,
-  ) {
+  ): ReturnType<ReservationsService['cancel']> {
     return this.reservationsService.cancel(id, user.id);
   }
 
@@ -682,7 +694,7 @@ export class ReservationsController {
   getAvailability(
     @Param('eventId', ParseUUIDPipe) eventId: string,
     @Body('seatIds') seatIds: string[],
-  ) {
+  ): ReturnType<SeatLockService['checkAvailability']> {
     return this.seatLock.checkAvailability(eventId, seatIds);
   }
 }
@@ -844,7 +856,11 @@ import { BuyersModule } from './modules/buyers/buyers.module.js';
     RedisModule.forRoot({
       host: process.env['REDIS_HOST'] ?? 'localhost',
       port: parseInt(process.env['REDIS_PORT'] ?? '6379', 10),
-      password: process.env['REDIS_PASSWORD'],
+      // exactOptionalPropertyTypes: omitir a chave quando ausente em vez de
+      // passar `undefined` explícito (password?: string não aceita undefined).
+      ...(process.env['REDIS_PASSWORD']
+        ? { password: process.env['REDIS_PASSWORD'] }
+        : {}),
     }),
     // Kafka global — ReservationsService injeta KafkaProducerService
     KafkaModule.forRoot({
@@ -919,7 +935,8 @@ async function bootstrap(): Promise<void> {
 
   const port = parseInt(process.env['PORT'] ?? '3004', 10);
   await app.listen(port);
-  Logger.log(`Booking Service rodando na porta ${port}`);
+  // String(port): restrict-template-expressions proíbe number em template
+  Logger.log(`Booking Service rodando na porta ${String(port)}`);
   Logger.log('Kafka consumer ativo (events.ticket-batch-*, auth.buyer-*)');
 }
 

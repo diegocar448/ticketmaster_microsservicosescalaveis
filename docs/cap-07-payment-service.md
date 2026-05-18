@@ -360,6 +360,22 @@ export class OrganizersConsumer {
 
 A peça central. Resolve reservas via HTTP (read-your-write), calcula taxa a partir da réplica local e cria a Stripe Checkout Session.
 
+> **Lint estrito — regras que o código deste capítulo deve seguir** (o CI roda
+> `eslint src/` com type-checking; snippets em notação simplificada abaixo
+> precisam destes ajustes para passar):
+> - **`process.env['X']`** (colchete, não `.X`) — `noPropertyAccessFromIndexSignature`.
+> - **Sem `!`**: use o helper `requireEnv('X')` (fail-fast) no lugar de `process.env.X!`.
+> - **Templates**: `${String(n)}` para number, e `FRONTEND_URL` resolvido a um
+>   `const` (`process.env['FRONTEND_URL'] ?? ''`) antes de interpolar
+>   (`restrict-template-expressions` rejeita `string | undefined`/`number`).
+> - **`metadata`**: `session.metadata?.['order_id']` (session pode ser null →
+>   mantém `?.`); já `paymentIntent.metadata['order_id']` e
+>   `charge.metadata['order_id']` são **sem `?.`** (Stripe tipa como sempre
+>   presente — `no-unnecessary-condition`). Sempre acesso por colchete.
+> - **Retorno explícito** em todo método público (controllers:
+>   `ReturnType<Service['m']>`; services: `Promise<...>`).
+> - **`catch`**: `(err: unknown) => { ... }` com chaves.
+
 ```typescript
 // apps/payment-service/src/modules/orders/orders.service.ts
 
@@ -413,11 +429,20 @@ interface Reservation {
   items: ReservationItem[];
 }
 
+// Lint estrito do projeto: `no-non-null-assertion` proíbe `process.env.X!`;
+// `noPropertyAccessFromIndexSignature` exige acesso por colchete
+// (process.env['X']). Helper de fail-fast substitui o `!` com erro claro.
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`Variável de ambiente obrigatória ausente: ${name}`);
+  return v;
+}
+
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
 
-  private readonly stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  private readonly stripe = new Stripe(requireEnv('STRIPE_SECRET_KEY'), {
     // Omitir apiVersion faz o SDK usar a versão "pinned" do build (22.x).
     // Evita drift entre SDK e API surface.
   });
@@ -570,11 +595,13 @@ export class OrdersService {
         { orderId: order.id, buyerId, organizerId, eventId, total },
         order.id,
       )
-      .catch((err) =>
+      // use-unknown-in-catch + no-confusing-void-expression: err: unknown e
+      // corpo com chaves (não retornar a expressão void do logger).
+      .catch((err: unknown) => {
         this.logger.warn('Falha ao emitir order.created (best-effort)', {
           error: (err as Error).message,
-        }),
-      );
+        });
+      });
 
     this.logger.log('Checkout criado', { orderId: order.id, sessionId: session.id });
 
@@ -589,7 +616,13 @@ export class OrdersService {
    * Retorna o pedido — 404 (não 403) se não pertencer ao buyer.
    * OWASP A01: 403 revela que o recurso existe (IDOR probing).
    */
-  async getOrder(orderId: string, buyerId: string) {
+  // explicit-function-return-type: OrderWithItems =
+  // Prisma.OrderGetPayload<{ include: { items: true } }> (importe `Prisma`
+  // de '../../prisma/generated/index.js').
+  async getOrder(
+    orderId: string,
+    buyerId: string,
+  ): Promise<OrderWithItems> {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: { items: true },
@@ -712,7 +745,7 @@ export class OrdersController {
     @Body(new ZodValidationPipe(CreateOrderSchema)) dto: CreateOrderDto,
     @CurrentUser() user: AuthenticatedUser,
     @Req() req: Request,
-  ) {
+  ): ReturnType<OrdersService['createCheckout']> {
     // Repassa os headers x-user-* do gateway para o booking-service validar
     // a reserva também (defesa em profundidade — não confiamos só no gateway)
     const authHeaders: Record<string, string> = {
@@ -729,7 +762,7 @@ export class OrdersController {
   async findOne(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthenticatedUser,
-  ) {
+  ): ReturnType<OrdersService['getOrder']> {
     return this.orders.getOrder(id, user.id);
   }
 }
@@ -760,12 +793,19 @@ import { KafkaProducerService } from '@showpass/kafka';
 import { KAFKA_TOPICS } from '@showpass/types';
 import { PrismaService } from '../../prisma/prisma.service.js';
 
+// Mesmo helper do OrdersService (no-non-null-assertion proíbe `!`).
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`Variável de ambiente obrigatória ausente: ${name}`);
+  return v;
+}
+
 @Controller('webhooks')
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);
 
-  private readonly stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-  private readonly webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
+  private readonly stripe = new Stripe(requireEnv('STRIPE_SECRET_KEY'));
+  private readonly webhookSecret = requireEnv('STRIPE_WEBHOOK_SECRET');
 
   constructor(
     private readonly prisma: PrismaService,
@@ -985,10 +1025,13 @@ O `OrdersService` faz `GET /bookings/reservations/:id` para cada reservation ID.
 
 @Get(':id')
 @UseGuards(BuyerGuard)
+// Retorno é fronteira HTTP (JSON serializado); o corpo permanece tipado.
+// `Promise<unknown>` satisfaz explicit-function-return-type sem duplicar o
+// shape enriquecido inline.
 async findOne(
   @Param('id', ParseUUIDPipe) id: string,
   @CurrentUser() user: AuthenticatedUser,
-) {
+): Promise<unknown> {
   const reservation = await this.prisma.reservation.findUnique({
     where: { id },
     include: { items: true },
