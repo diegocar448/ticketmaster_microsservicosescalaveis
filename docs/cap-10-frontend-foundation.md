@@ -674,7 +674,7 @@ export default function LoginPage(): React.JSX.Element {
 ```typescript
 // apps/web/src/app/(public)/login/login-form.tsx
 //
-// Componente CLIENT do login UNIFICADO. Usa useSearchParams() — por isso
+// Componente client do login UNIFICADO. Usa useSearchParams() — por isso
 // vive separado da page (que o envolve em <Suspense>: requisito do Next
 // para static generation de páginas com useSearchParams).
 'use client';

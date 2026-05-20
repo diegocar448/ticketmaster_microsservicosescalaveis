@@ -259,7 +259,8 @@
       "Bash(timeout 540 make compose-build SERVICE=api-gateway)",
       "Bash(tee /tmp/showpass-logs/dockerbuild-final.log)",
       "Bash(timeout 1800 make compose-build)",
-      "Bash(tee /tmp/showpass-logs/dockerbuild-all.log)"
+      "Bash(tee /tmp/showpass-logs/dockerbuild-all.log)",
+      "Bash(gh pr *)"
     ],
     "additionalDirectories": [
       "/tmp",
