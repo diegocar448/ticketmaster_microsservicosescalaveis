@@ -33,19 +33,46 @@ packages/types/
   "name": "@showpass/types",
   "version": "0.0.1",
   "private": true,
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
   "types": "./src/index.ts",
+  // Exports map com subpath "./nest" — isola código NestJS do bundle do frontend.
+  // O @CurrentUser() depende de @nestjs/common; expô-lo a partir do entrypoint
+  // principal poluiria o bundle do Next.js (Cap 10). O subpath isola a fronteira.
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./nest": {
+      "types": "./src/decorators/current-user.decorator.ts",
+      "import": "./dist/decorators/current-user.decorator.js",
+      "default": "./dist/decorators/current-user.decorator.js"
+    }
+  },
   "scripts": {
+    "build": "tsc",
     "lint": "eslint src/",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
+    "@nestjs/common": "^11.0.0",
     "zod": "^4.0.0"
   },
+  "peerDependencies": {
+    "@types/express": "^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@types/express": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.8.0"
-  }
+  },
+  "type": "module"
 }
 ```
 

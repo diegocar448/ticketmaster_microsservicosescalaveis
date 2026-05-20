@@ -807,10 +807,13 @@ export const CurrentUser = createParamDecorator(
 );
 ```
 
-> Exportar em `packages/types/src/index.ts`:
+> **NÃO re-exportar** esse decorator no `packages/types/src/index.ts`. O `@nestjs/common` é uma dependência pesada — exportá-lo a partir do entrypoint principal poluiria o bundle do frontend Next.js (Cap 10) e quebraria o build do Turbopack.
+>
+> Em vez disso, o `packages/types/package.json` (Cap 02) define um subpath `./nest` no `exports`. Os serviços NestJS importam assim:
 > ```typescript
-> export * from './decorators/current-user.decorator.js';
+> import { CurrentUser, type AuthenticatedUser } from '@showpass/types/nest';
 > ```
+> Frontend continua usando `import { ... } from '@showpass/types'` (sem NestJS).
 
 ---
 
@@ -828,7 +831,7 @@ import { OrganizerAuthService } from './organizer-auth.service.js';
 import { BuyerAuthService } from './buyer-auth.service.js';
 import { TokenService } from './token.service.js';
 import { OrganizerGuard } from '../../common/guards/organizer.guard.js';
-import { CurrentUser, type AuthenticatedUser } from '@showpass/types';
+import { CurrentUser, type AuthenticatedUser } from '@showpass/types/nest';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { z } from 'zod';
 
