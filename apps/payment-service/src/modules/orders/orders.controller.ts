@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 
-import { CurrentUser, type AuthenticatedUser } from '@showpass/types';
+import { CurrentUser, type AuthenticatedUser } from '@showpass/types/nest';
 
 import { OrdersService } from './orders.service.js';
 import { BuyerGuard } from '../../common/guards/buyer.guard.js';

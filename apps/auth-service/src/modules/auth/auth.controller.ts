@@ -24,7 +24,7 @@ import { OrganizerAuthService } from './organizer-auth.service.js';
 import { BuyerAuthService } from './buyer-auth.service.js';
 import { TokenService } from './token.service.js';
 import { OrganizerGuard } from '../../common/guards/organizer.guard.js';
-import { CurrentUser, type AuthenticatedUser } from '@showpass/types';
+import { CurrentUser, type AuthenticatedUser } from '@showpass/types/nest';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { z } from 'zod';
 

@@ -2,9 +2,22 @@
   "name": "@showpass/types",
   "version": "0.0.1",
   "private": true,
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
   "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./nest": {
+      "types": "./src/decorators/current-user.decorator.ts",
+      "import": "./dist/decorators/current-user.decorator.js",
+      "default": "./dist/decorators/current-user.decorator.js"
+    }
+  },
   "scripts": {
+    "build": "tsc",
     "lint": "eslint src/",
     "type-check": "tsc --noEmit"
   },

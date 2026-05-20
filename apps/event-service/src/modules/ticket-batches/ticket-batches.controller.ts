@@ -23,13 +23,12 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import {
   CreateTicketBatchSchema,
   UpdateTicketBatchSchema,
-  CurrentUser,
 } from '@showpass/types';
 import type {
-  AuthenticatedUser,
   CreateTicketBatchDto,
   UpdateTicketBatchDto,
 } from '@showpass/types';
+import { CurrentUser, type AuthenticatedUser } from '@showpass/types/nest';
 
 @Controller('events/:eventId/ticket-batches')
 @UseGuards(OrganizerGuard)

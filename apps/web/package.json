@@ -12,18 +12,25 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@hookform/resolvers": "^5.0.0",
     "@showpass/types": "workspace:*",
+    "jose": "^5.9.0",
+    "jwt-decode": "^4.0.0",
     "next": "^16.0.0",
-    "react": "^18.0.0",
-    "react-dom": "^18.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-hook-form": "^7.53.0",
     "zod": "^4.0.0",
     "zustand": "^4.0.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.44.0",
+    "@svgr/webpack": "^8.1.0",
+    "@tailwindcss/postcss": "^4.0.0",
     "@types/node": "^22.0.0",
-    "@types/react": "^18.0.0",
-    "@types/react-dom": "^18.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tailwindcss": "^4.0.0",
     "typescript": "^5.8.0"
   }
 }

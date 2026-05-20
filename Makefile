@@ -5,10 +5,42 @@
 
 .PHONY: dev dev-services dev-stop dev-status dev-logs \
         build test lint type-check \
+        up down compose-build ascii-link \
         infra-up infra-down infra-logs kafka-topics \
         db-generate db-migrate db-seed db-studio \
         copy-env gen-keys \
         github-setup clean help
+
+# ─── Docker Compose — workaround do "ç" no caminho ────────────────────────────
+# PORQUÊ: o buildx abre uma sessão gRPC e usa o caminho ABSOLUTO da pasta como
+# valor do header `x-docker-expose-session-sharedkey`. Headers HTTP/2 exigem
+# ASCII; o "ç" (UTF-8 multibyte) quebra com:
+#   "x-docker-expose-session-sharedkey contains non-printable ASCII characters".
+# SOLUÇÃO: manter o "ç" na pasta real e rodar o compose através de um symlink
+# 100% ASCII (ASCII_DIR). O buildx usa a string do symlink como sharedkey →
+# header válido. COMPOSE_PROJECT_NAME é fixado para o nome já existente, senão
+# trocar o --project-directory recriaria volumes/containers (perda de dados).
+ASCII_DIR := $(HOME)/projects/tm-ascii
+export COMPOSE_PROJECT_NAME := ticketmaster_microsserviosescalaveis
+DC := docker compose --project-directory $(ASCII_DIR)
+
+# Garante (idempotente) o symlink ASCII → pasta real (com ç). Recriado se o
+# alvo mudou; inofensivo se já correto.
+ascii-link:
+	@ln -sfn "$(CURDIR)" "$(ASCII_DIR)"
+	@echo "🔗 $(ASCII_DIR) → $$(readlink $(ASCII_DIR))"
+
+# Sobe a stack COMPLETA (builda as imagens dos serviços via BuildKit).
+# Use este alvo em vez de `docker compose up -d` direto da pasta com ç.
+up: ascii-link
+	$(DC) up -d
+
+down: ascii-link
+	$(DC) down
+
+# Builda todas as imagens (ou SERVICE=api-gateway p/ uma só) sem subir.
+compose-build: ascii-link
+	$(DC) build $(SERVICE)
 
 # ─── Desenvolvimento ──────────────────────────────────────────────────────────
 
@@ -31,16 +63,16 @@ dev-logs:
 
 # Somente infraestrutura (postgres, redis, kafka, elasticsearch)
 # Os serviços NestJS/Next.js rodam diretamente com pnpm (hot reload nativo)
-infra-up:
-	docker compose up postgres redis kafka kafka-ui elasticsearch -d
+infra-up: ascii-link
+	$(DC) up postgres redis kafka kafka-ui elasticsearch -d
 	@echo "⏳ Aguardando serviços ficarem saudáveis..."
-	@docker compose ps
+	@$(DC) ps
 
-infra-down:
-	docker compose down
+infra-down: ascii-link
+	$(DC) down
 
-infra-logs:
-	docker compose logs -f postgres redis kafka elasticsearch
+infra-logs: ascii-link
+	$(DC) logs -f postgres redis kafka elasticsearch
 
 # Pré-cria todos os tópicos Kafka usados pelos serviços (idempotente).
 # dev-services já chama isso automaticamente — use manualmente após um
@@ -101,9 +133,9 @@ build:
 	pnpm run build
 
 # Remove builds, node_modules e volumes Docker locais
-clean:
+clean: ascii-link
 	pnpm run clean
-	docker compose down -v  # remove volumes de dados locais (cuidado: apaga dados!)
+	$(DC) down -v  # remove volumes de dados locais (cuidado: apaga dados!)
 
 # ─── GitHub — Branch Protection ──────────────────────────────────────────────
 
@@ -171,6 +203,10 @@ help:
 	@echo "  make dev-stop     Para os serviços iniciados por dev-services"
 	@echo "  make dev-status   Status (porta + PID) dos serviços"
 	@echo "  make dev-logs     Tail dos logs dos serviços"
+	@echo "  make up           Sobe a stack COMPLETA (builda imagens; use no lugar"
+	@echo "                    de 'docker compose up -d' por causa do ç no path)"
+	@echo "  make down         Para a stack completa"
+	@echo "  make compose-build Builda imagens (SERVICE=api-gateway p/ uma só)"
 	@echo "  make infra-up     Sobe apenas postgres, redis, kafka, elasticsearch"
 	@echo "  make infra-down   Para todos os containers"
 	@echo "  make infra-logs   Tail de logs da infra"

@@ -6,7 +6,10 @@
 FROM node:22-alpine AS dev
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 WORKDIR /app
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# .npmrc + .pnpmfile.cjs precisam estar presentes ANTES do install: o lockfile
+# grava `pnpmfileChecksum` quando há .pnpmfile.cjs no projeto; se o arquivo
+# falta na imagem, pnpm --frozen-lockfile aborta com ERR_PNPM_LOCKFILE_CONFIG_MISMATCH.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc .pnpmfile.cjs ./
 COPY packages/ ./packages/
 COPY apps/api-gateway/ ./apps/api-gateway/
 RUN pnpm install --frozen-lockfile
