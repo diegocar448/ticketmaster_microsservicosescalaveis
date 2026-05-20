@@ -21,8 +21,9 @@ import { z } from 'zod';
 import { EventsService } from './events.service.js';
 import { OrganizerGuard } from '../../common/guards/organizer.guard.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
-import { CurrentUser, CreateEventSchema } from '@showpass/types';
-import type { AuthenticatedUser, CreateEventDto, EventStatus } from '@showpass/types';
+import { CreateEventSchema } from '@showpass/types';
+import type { CreateEventDto, EventStatus } from '@showpass/types';
+import { CurrentUser, type AuthenticatedUser } from '@showpass/types/nest';
 
 // Transições possíveis via API (draft não é transitável via request externo)
 const TransitionStatusSchema = z.object({

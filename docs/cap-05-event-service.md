@@ -549,7 +549,7 @@ import {
 } from '@nestjs/common';
 import { EventsService } from './events.service';
 import { OrganizerGuard } from '../../common/guards/organizer.guard';
-import { CurrentUser, type AuthenticatedUser } from '@showpass/types';
+import { CurrentUser, type AuthenticatedUser } from '@showpass/types/nest';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { CreateEventSchema, type CreateEventDto } from '@showpass/types';
 import { z } from 'zod';

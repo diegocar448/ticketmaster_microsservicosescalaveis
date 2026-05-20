@@ -16,14 +16,9 @@ import {
 import { VenuesService } from './venues.service.js';
 import { OrganizerGuard } from '../../common/guards/organizer.guard.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
-import {
-  CreateVenueWithSectionsSchema,
-  CurrentUser,
-} from '@showpass/types';
-import type {
-  AuthenticatedUser,
-  CreateVenueWithSectionsDto,
-} from '@showpass/types';
+import { CreateVenueWithSectionsSchema } from '@showpass/types';
+import type { CreateVenueWithSectionsDto } from '@showpass/types';
+import { CurrentUser, type AuthenticatedUser } from '@showpass/types/nest';
 
 @Controller('venues')
 @UseGuards(OrganizerGuard)

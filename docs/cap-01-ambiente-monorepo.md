@@ -539,7 +539,10 @@ WORKDIR /app
 
 # ─── Stage: deps (instala dependências uma vez) ───────────────────────────────
 FROM base AS deps
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# .npmrc + .pnpmfile.cjs PRECISAM estar presentes antes do install:
+# o lockfile grava `pnpmfileChecksum` quando há .pnpmfile.cjs no projeto.
+# Sem o arquivo, pnpm --frozen-lockfile aborta com ERR_PNPM_LOCKFILE_CONFIG_MISMATCH.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc .pnpmfile.cjs ./
 COPY packages/ ./packages/
 # --frozen-lockfile garante reproducibilidade (sem surpresas no CI)
 RUN pnpm install --frozen-lockfile
@@ -636,8 +639,38 @@ Neste ponto os arquivos têm os valores padrão do `.env.example`. O campo `JWT_
 # Makefile — comandos do dia a dia
 
 .PHONY: setup dev dev-services dev-stop dev-status dev-logs \
-        build test lint infra-up infra-down \
-        db-migrate db-seed gen-keys clean
+        build test lint up down compose-build ascii-link \
+        infra-up infra-down db-migrate db-seed gen-keys clean
+
+# ─── Docker Compose — workaround do "ç" no caminho ────────────────────────────
+# PORQUÊ: o buildx abre uma sessão gRPC e usa o caminho ABSOLUTO da pasta como
+# valor do header `x-docker-expose-session-sharedkey`. Headers HTTP/2 exigem
+# ASCII; um "ç"/acento (UTF-8 multibyte) quebra com:
+#   "x-docker-expose-session-sharedkey contains non-printable ASCII characters".
+# SOLUÇÃO: manter o "ç" na pasta real e rodar o compose através de um symlink
+# 100% ASCII (ASCII_DIR). O buildx usa a string do symlink como sharedkey →
+# header válido. COMPOSE_PROJECT_NAME é fixado para o nome já existente, senão
+# trocar o --project-directory recriaria volumes/containers (perda de dados).
+ASCII_DIR := $(HOME)/projects/tm-ascii
+export COMPOSE_PROJECT_NAME := ticketmaster_microsserviosescalaveis
+DC := docker compose --project-directory $(ASCII_DIR)
+
+# Garante (idempotente) o symlink ASCII → pasta real (com ç). Recriado se o
+# alvo mudou; inofensivo se já correto.
+ascii-link:
+	@ln -sfn "$(CURDIR)" "$(ASCII_DIR)"
+	@echo "🔗 $(ASCII_DIR) → $$(readlink $(ASCII_DIR))"
+
+# Sobe a stack COMPLETA (builda as imagens via BuildKit).
+# Use no lugar de `docker compose up -d` direto da pasta com acento.
+up: ascii-link
+	$(DC) up -d
+
+down: ascii-link
+	$(DC) down
+
+compose-build: ascii-link
+	$(DC) build $(SERVICE)
 
 # ─── Setup inicial (rodar uma vez após clonar o repo) ────────────────────────
 # Cria os .env de todos os serviços a partir dos .env.example
@@ -685,14 +718,15 @@ dev-logs:
 dev: infra-up
 	pnpm run dev
 
-# Somente infraestrutura (postgres, redis, kafka, elasticsearch)
-infra-up:
-	docker compose up postgres redis kafka kafka-ui elasticsearch -d
+# Somente infraestrutura (postgres, redis, kafka, elasticsearch).
+# Passa por $(DC) — mesmo workaround do "ç" no path (ver topo do Makefile).
+infra-up: ascii-link
+	$(DC) up postgres redis kafka kafka-ui elasticsearch -d
 	@echo "Aguardando serviços ficarem saudáveis..."
-	@docker compose ps
+	@$(DC) ps
 
-infra-down:
-	docker compose down
+infra-down: ascii-link
+	$(DC) down
 
 # ─── Banco de dados ───────────────────────────────────────────────────────────
 db-migrate:
@@ -725,9 +759,9 @@ test-e2e:
 build:
 	pnpm run build
 
-clean:
+clean: ascii-link
 	pnpm run clean
-	docker compose down -v   # remove volumes de dados locais
+	$(DC) down -v   # remove volumes de dados locais
 ```
 
 ---
@@ -748,6 +782,31 @@ clean:
 # raiz — resolve o erro "Cannot find module '@prisma/client-runtime-utils'"
 public-hoist-pattern[]=@prisma/*
 ```
+
+### `.pnpmfile.cjs` — patches de segurança via hook
+
+```js
+// .pnpmfile.cjs — Hooks para pnpm resolver dependências e vulnerabilidades
+// Fornece overrides de versões para patches de segurança
+
+module.exports = {
+  hooks: {
+    readPackage(pkg) {
+      // OWASP A06: atualizar tar para versão sem vulnerabilidades conhecidas
+      // bcrypt@5.1.1 depende de @mapbox/node-pre-gyp que usa tar@6.2.1
+      // Forçar tar para >=7.5.11 (última versão segura)
+      if (pkg.dependencies?.tar || pkg.devDependencies?.tar) {
+        if (!pkg.dependencies) pkg.dependencies = {};
+        pkg.dependencies.tar = '>=7.5.11';
+      }
+
+      return pkg;
+    },
+  },
+};
+```
+
+> **Importante:** quando esse arquivo existe, o pnpm grava um `pnpmfileChecksum` no lockfile. Em qualquer ambiente que rode `pnpm install --frozen-lockfile` (CI, Docker), o `.pnpmfile.cjs` precisa estar presente — senão o install aborta com `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`. Por isso o Passo 1.9 (Dockerfile) copia `.npmrc` e `.pnpmfile.cjs` antes do install.
 
 ### `.swcrc` — compilador SWC para NestJS
 
@@ -1282,8 +1341,11 @@ Os `.env` criados têm valores de desenvolvimento funcional — exceto `JWT_PUBL
 **1. Subir os containers de infraestrutura**
 
 ```bash
-docker compose up -d
+make up         # equivalente a `docker compose up -d`, mas com o workaround
+                # do "ç"/acento no path (ver Passo 1.11)
 ```
+
+> Se o seu caminho **não** tem caracteres não-ASCII (acentos, ç), `docker compose up -d` direto também funciona — mas `make up` é seguro em qualquer caso.
 
 Aguarde ~30 segundos para PostgreSQL, Redis, Kafka e Elasticsearch inicializarem.
 

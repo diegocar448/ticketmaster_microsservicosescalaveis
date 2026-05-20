@@ -24,7 +24,8 @@ apps/web/
 │   │   ├── (public)/               # Route group — rotas sem auth
 │   │   │   ├── page.tsx            # Home: busca de eventos
 │   │   │   ├── login/
-│   │   │   │   └── page.tsx        # Login UNIFICADO (organizer | comprador)
+│   │   │   │   ├── page.tsx        # Server: <Suspense> wrapper (Next exige p/ useSearchParams)
+│   │   │   │   └── login-form.tsx  # Client: formulário UNIFICADO (organizer | comprador)
 │   │   │   ├── events/[slug]/
 │   │   │   │   └── page.tsx        # Página do evento (SSR)
 │   │   │   └── search/
@@ -55,6 +56,7 @@ apps/web/
 │   │   ├── ui/                     # shadcn/ui (gerado)
 │   │   ├── events/
 │   │   └── layout/
+│   ├── env.d.ts                    # Tipagem de process.env (NEXT_PUBLIC_*, JWT_PUBLIC_KEY)
 │   └── middleware.ts               # Proteção de rotas
 ├── package.json
 └── next.config.ts
@@ -72,8 +74,14 @@ apps/web/
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  // Turbopack — compilação 400% mais rápida que Webpack; estável desde Next 16
+  // @showpass/types é um workspace package em TS cru (sem build) com
+  // specifiers NodeNext `.js`. transpilePackages faz o Next compilá-lo;
+  // resolveExtensions/extensionAlias mapeia o `./x.js` → `./x.ts`.
+  transpilePackages: ['@showpass/types'],
+
+  // Turbopack — estável desde Next 16
   turbopack: {
+    resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.json'],
     rules: {
       '*.svg': {
         loaders: ['@svgr/webpack'],
@@ -83,13 +91,13 @@ const nextConfig: NextConfig = {
   },
 
   // Validar variáveis de ambiente em build time
-  // Se uma var obrigatória estiver faltando, o build falha com mensagem clara
   env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL!,
-    NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!,
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
+    NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY:
+      process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY,
   },
 
-  // Domínios de imagens permitidos (OWASP A05: não carregar imagens de qualquer origem)
+  // Domínios de imagens permitidos (OWASP A05)
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: 'storage.showpass.com.br' },
@@ -97,7 +105,7 @@ const nextConfig: NextConfig = {
     ],
   },
 
-  // Security Headers (complementa o Nginx/Cloudflare)
+  // Security headers (complementa Nginx/Cloudflare)
   async headers() {
     return [
       {
@@ -106,24 +114,51 @@ const nextConfig: NextConfig = {
           { key: 'X-Frame-Options', value: 'DENY' },
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
-          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(self)' },
+          {
+            key: 'Permissions-Policy',
+            value: 'camera=(), microphone=(), geolocation=(self)',
+          },
         ],
       },
     ];
   },
 
-  // PPR (Partial Pre-Rendering) em modo incremental — Next 16.2
-  // Cada rota opta individualmente via: export const experimental_ppr = true
-  // Isso combina shell estático com streaming de partes dinâmicas por componente
-  experimental: {
-    ppr: 'incremental',
-  },
+  // PPR: em Next 16.2 o antigo `experimental.ppr` foi mesclado em
+  // `cacheComponents` (muda a semântica de cache e exige diretivas
+  // `'use cache'`). Não é necessário no capítulo de fundação — fica
+  // opt-in num capítulo posterior, quando houver rota que se beneficie.
 };
 
 export default nextConfig;
 ```
 
-> **PPR incremental vs `ppr: true`:** Em Next 16, habilitar `ppr: true` globalmente ativa o modo experimental completo e pode quebrar rotas que ainda não foram testadas com PPR. O modo `'incremental'` é mais seguro: apenas as rotas que exportam `experimental_ppr = true` recebem o tratamento PPR. Nas páginas dos capítulos seguintes mostraremos onde faz sentido ativar.
+> **`transpilePackages: ['@showpass/types']`:** o pacote `@showpass/types` é um workspace em TypeScript cru (entrypoint aponta para `./src/index.ts` em tempo de tipo). Sem `transpilePackages`, o Turbopack não compila o pacote e o build de produção quebra ao topar com `.ts`. `resolveExtensions` no `turbopack` ensina o resolver a mapear specifiers NodeNext `./x.js` → `./x.ts` durante o build do Next.
+>
+> **Por que removemos `experimental.ppr`:** em Next 16.2 a feature foi mesclada em `cacheComponents` (Server Components com cache explícito via `'use cache'`). O modo antigo deixou de existir; ativá-lo aqui no Capítulo de fundação adicionaria complexidade sem ganho — fica opt-in para capítulos posteriores.
+
+---
+
+### `src/env.d.ts` — tipagem de `process.env`
+
+```typescript
+// apps/web/src/env.d.ts
+//
+// Tipa process.env como propriedades DECLARADAS (não index signature).
+// Sem isto, `process.env.NEXT_PUBLIC_API_URL` (notação ponto, EXIGIDA pelo
+// Next para substituição estática de NEXT_PUBLIC_*) dispara TS4111 sob
+// `noPropertyAccessFromIndexSignature` do tsconfig base.
+
+declare namespace NodeJS {
+  interface ProcessEnv {
+    readonly NEXT_PUBLIC_API_URL: string;
+    readonly NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: string;
+    readonly JWT_PUBLIC_KEY: string;
+    readonly NODE_ENV: 'development' | 'production' | 'test';
+  }
+}
+```
+
+> **Por que isso é necessário:** o Next.js exige que variáveis `NEXT_PUBLIC_*` sejam acessadas em notação ponto (`process.env.NEXT_PUBLIC_API_URL`) — só assim o build estático substitui o valor inline no bundle. Mas o `tsconfig.base.json` do projeto liga `noPropertyAccessFromIndexSignature`, que proíbe ponto em propriedades de index signature (o tipo padrão de `process.env` é `Record<string, string | undefined>`). A declaração acima resolve o conflito **declarando** as propriedades — passam a aceitar notação ponto **e** ficam tipadas.
 
 ---
 
@@ -547,6 +582,7 @@ export const config = {
 ```typescript
 // apps/web/src/app/layout.tsx
 
+import type React from 'react';
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import { Toaster } from '@/components/ui/toaster';
@@ -568,17 +604,16 @@ export const metadata: Metadata = {
   },
 };
 
-// Sem tipo de retorno explícito — React 19 removeu o namespace JSX global;
-// omitir o tipo é o padrão idiomático para componentes funcionais.
+// explicit-function-return-type (eslint do projeto, 'error'): anotar o retorno.
+// React 19 removeu o namespace global JSX — usamos React.JSX.Element.
 export default function RootLayout({
   children,
 }: {
   children: React.ReactNode;
-}) {
+}): React.JSX.Element {
   return (
     <html lang="pt-BR">
       <body className={inter.className}>
-        {/* Toaster global para notificações */}
         <Toaster />
         {children}
       </body>
@@ -589,27 +624,62 @@ export default function RootLayout({
 
 ---
 
-## Passo 10.8 — Login unificado (Client Component)
+## Passo 10.8 — Login unificado (`page.tsx` + `login-form.tsx`)
 
 > **Por que UMA página e não duas?** O auth-service tem rotas separadas
 > (`/auth/organizers/login` e `/auth/buyers/login`) porque organizers e buyers
-> vivem em tabelas distintas. Mas, do ponto de vista de UX e de roteamento, ter
+> vivem em tabelas distintas. Mas, do ponto de vista de UX e roteamento, ter
 > duas páginas (`/login` e `/buyer/login`) gera fricção: o middleware precisa
-> decidir para qual redirecionar, o checkout (cap-12) é fluxo de buyer e o
+> decidir para qual redirecionar; o checkout (cap-12) é fluxo de buyer e o
 > dashboard (cap-13) é de organizer — ambos precisam mandar para "a tela de
 > login". Solução: **uma rota `/login`** com um seletor organizer|comprador.
 > O `redirectToLogin` do middleware já passa `?as=organizer|buyer` para
 > pré-selecionar a aba.
 
+> **Por que DOIS arquivos (`page.tsx` + `login-form.tsx`)?** O formulário usa
+> `useSearchParams()` para ler `?as=` e `?redirect=`. Em Next 16, qualquer
+> Client Component que chame `useSearchParams()` precisa estar dentro de um
+> `<Suspense>` boundary — senão o build estático falha com
+> `missing-suspense-with-csr-bailout`. O padrão idiomático é separar:
+>
+> - **`page.tsx`** — Server Component que só envolve `<LoginForm />` em
+>   `<Suspense>` (fallback é o esqueleto da tela).
+> - **`login-form.tsx`** — Client Component com `'use client'`, hooks e a
+>   lógica do formulário.
+
 ```typescript
 // apps/web/src/app/(public)/login/page.tsx
 //
-// Login UNIFICADO. Um seletor escolhe o tipo; o tipo decide a ROTA
-// (/auth/organizers/login vs /auth/buyers/login) — o body é igual nas duas
-// ({ email, password }). Resposta: { accessToken, expiresIn } (sem `user`);
-// os dados do usuário saem dos claims do JWT no auth-store (setAuth).
+// Server Component que envolve o LoginForm (client) em <Suspense>.
+// Next exige Suspense para páginas com useSearchParams() na geração
+// estática — sem isso, `next build` falha (missing-suspense-with-csr-bailout).
+
+import type React from 'react';
+import { Suspense } from 'react';
+import { LoginForm } from './login-form';
+
+export default function LoginPage(): React.JSX.Element {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center bg-gray-50" />
+      }
+    >
+      <LoginForm />
+    </Suspense>
+  );
+}
+```
+
+```typescript
+// apps/web/src/app/(public)/login/login-form.tsx
+//
+// Componente client do login UNIFICADO. Usa useSearchParams() — por isso
+// vive separado da page (que o envolve em <Suspense>: requisito do Next
+// para static generation de páginas com useSearchParams).
 'use client';
 
+import type React from 'react';
 import { useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
@@ -621,56 +691,53 @@ import { useAuthStore } from '@/store/auth-store';
 import { LoginRequestSchema, LoginResponseSchema } from '@showpass/types';
 import { ApiError } from '@/lib/api-client';
 
-// Reutiliza o schema do @showpass/types — mesma fonte da verdade que o backend.
-// Zod 4: z.email() top-level; evitar z.string().email() (deprecated).
-type LoginForm = z.infer<typeof LoginRequestSchema>;
-
+// Reutiliza o schema do @showpass/types — mesma fonte da verdade do backend.
+type LoginFormValues = z.infer<typeof LoginRequestSchema>;
 type LoginAs = 'organizer' | 'buyer';
 
-export default function LoginPage() {
+export function LoginForm(): React.JSX.Element {
   const router = useRouter();
   const searchParams = useSearchParams();
   const setAuth = useAuthStore((s) => s.setAuth);
   const [error, setError] = useState<string | null>(null);
 
   // ?as=organizer|buyer (vindo do middleware) pré-seleciona a aba.
-  // Default 'buyer': a maioria do tráfego é de compradores.
   const initialAs: LoginAs =
     searchParams.get('as') === 'organizer' ? 'organizer' : 'buyer';
   const [loginAs, setLoginAs] = useState<LoginAs>(initialAs);
 
-  const { register, handleSubmit, formState: { errors, isSubmitting } } =
-    useForm<LoginForm>({ resolver: zodResolver(LoginRequestSchema) });
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<LoginFormValues>({ resolver: zodResolver(LoginRequestSchema) });
 
-  const onSubmit = async (data: LoginForm): Promise<void> => {
+  const onSubmit = async (data: LoginFormValues): Promise<void> => {
     setError(null);
 
-    // O tipo escolhido decide a ROTA — o contrato do body é idêntico.
     const route =
       loginAs === 'organizer'
         ? '/auth/organizers/login'
         : '/auth/buyers/login';
 
     try {
-      // NEXT_PUBLIC_API_URL aponta para o API Gateway (:3000), não o frontend
       const response = await fetch(
         `${process.env.NEXT_PUBLIC_API_URL}${route}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(data),
-          credentials: 'include', // receber httpOnly cookie do refresh token
+          credentials: 'include',
         },
       );
 
       if (!response.ok) {
-        const err = await response.json() as { message: string };
+        const err = (await response.json()) as { message: string };
         setError(err.message);
         return;
       }
 
       const raw: unknown = await response.json();
-
       const parsed = LoginResponseSchema.safeParse(raw);
       if (!parsed.success) {
         console.error('[login] Resposta inesperada:', parsed.error.issues);
@@ -681,11 +748,8 @@ export default function LoginPage() {
       // setAuth decodifica o JWT e popula `user` a partir dos claims
       setAuth(parsed.data.accessToken, parsed.data.expiresIn);
 
-      // Volta para a rota original (middleware passou ?redirect=...),
-      // ou cai num default coerente com o tipo escolhido.
       const fallback = loginAs === 'organizer' ? '/dashboard' : '/';
       router.push(searchParams.get('redirect') ?? fallback);
-
     } catch (err) {
       setError(
         err instanceof ApiError
@@ -700,13 +764,14 @@ export default function LoginPage() {
       <div className="w-full max-w-sm p-8 bg-white rounded-2xl shadow-md">
         <h1 className="text-2xl font-bold text-center mb-6">ShowPass</h1>
 
-        {/* Seletor organizer | comprador */}
         <div className="grid grid-cols-2 gap-1 p-1 mb-6 bg-gray-100 rounded-lg">
           {(['buyer', 'organizer'] as const).map((t) => (
             <button
               key={t}
               type="button"
-              onClick={() => setLoginAs(t)}
+              onClick={() => {
+                setLoginAs(t);
+              }}
               className={
                 'py-2 text-sm rounded-md transition ' +
                 (loginAs === t
@@ -719,7 +784,13 @@ export default function LoginPage() {
           ))}
         </div>
 
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <form
+          onSubmit={(e) => {
+            // no-misused-promises: handleSubmit retorna Promise; envolver com void
+            void handleSubmit(onSubmit)(e);
+          }}
+          className="space-y-4"
+        >
           <div>
             <Input
               type="email"
@@ -728,7 +799,9 @@ export default function LoginPage() {
               aria-invalid={!!errors.email}
             />
             {errors.email && (
-              <p className="text-red-500 text-sm mt-1">{errors.email.message}</p>
+              <p className="text-red-500 text-sm mt-1">
+                {errors.email.message}
+              </p>
             )}
           </div>
 
@@ -740,7 +813,9 @@ export default function LoginPage() {
               aria-invalid={!!errors.password}
             />
             {errors.password && (
-              <p className="text-red-500 text-sm mt-1">{errors.password.message}</p>
+              <p className="text-red-500 text-sm mt-1">
+                {errors.password.message}
+              </p>
             )}
           </div>
 
@@ -859,7 +934,7 @@ No DevTools → Network, filtre por `localhost:3000`. Todas as requests do front
 
 ## Recapitulando
 
-1. **App Router + PPR incremental** — `ppr: 'incremental'` permite que cada rota opte via `export const experimental_ppr = true`; melhor performance sem risco de regressão em rotas não testadas
+1. **App Router + Turbopack** — `transpilePackages: ['@showpass/types']` + `resolveExtensions` no Turbopack permitem consumir o workspace em TS cru sem build step; PPR fica opt-in para um capítulo posterior (foi mesclado em `cacheComponents` no Next 16.2)
 2. **API client com Zod** — toda resposta validada em runtime com `.issues` (Zod 4); sem `any` nas fronteiras de rede
 3. **JWT decode no cliente** — `jwt-decode` popula `user` a partir dos claims; o backend não precisa retornar um objeto `user` separado
 4. **`useAuthStore.getState()`** — acesso idiomático ao store Zustand fora de componentes React; sem wrapper `getAuthStore()`

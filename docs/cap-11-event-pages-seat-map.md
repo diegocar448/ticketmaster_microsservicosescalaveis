@@ -71,7 +71,7 @@ import { ReservationsService } from './reservations.service.js';
 import { SeatLockService } from '../locks/seat-lock.service.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { BuyerGuard } from '../../common/guards/buyer.guard.js';
-import { CurrentUser, type AuthenticatedUser } from '@showpass/types';
+import { CurrentUser, type AuthenticatedUser } from '@showpass/types/nest';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { CreateReservationSchema, type CreateReservationDto } from '@showpass/types';
 

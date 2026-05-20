@@ -731,7 +731,7 @@ import type { Request } from 'express';
 
 import { OrdersService } from './orders.service.js';
 import { BuyerGuard } from '../../common/guards/buyer.guard.js';
-import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator.js';
+import { CurrentUser, type AuthenticatedUser } from '@showpass/types/nest';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { CreateOrderSchema, CreateOrderDto } from './dto/create-order.dto.js';
 
