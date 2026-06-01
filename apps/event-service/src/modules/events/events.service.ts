@@ -15,7 +15,13 @@ import {
 } from '@nestjs/common';
 import slugify from 'slugify';
 import { EventsRepository } from './events.repository.js';
-import type { EventCreated, EventWithDetails, EventPublic, EventList } from './events.repository.js';
+import type {
+  EventCreated,
+  EventWithDetails,
+  EventPublic,
+  EventList,
+  DashboardStats,
+} from './events.repository.js';
 import { EventStatusMachine } from './event-status.js';
 import type { EventStatus } from './event-status.js';
 import { KafkaProducerService } from '@showpass/kafka';
@@ -106,6 +112,15 @@ export class EventsService {
     params: { status?: EventStatus; page: number; limit: number },
   ): Promise<EventList> {
     return this.eventsRepo.listByOrganizer(organizerId, params);
+  }
+
+  /**
+   * Métricas agregadas para o dashboard do organizer.
+   * Sem cache Redis — dados mudam a cada venda/reserva. Se a latência virar
+   * problema: cache com TTL de 60s (aceitável para um dashboard operacional).
+   */
+  async getDashboardStats(organizerId: string): Promise<DashboardStats> {
+    return this.eventsRepo.getDashboardStats(organizerId);
   }
 
   /**

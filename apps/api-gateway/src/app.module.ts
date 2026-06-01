@@ -56,9 +56,15 @@ export class AppModule implements NestModule {
         { path: 'auth/buyers/login',        method: RequestMethod.POST },
         { path: 'auth/buyer/login',         method: RequestMethod.POST },  // rota legada
         { path: 'auth/refresh',             method: RequestMethod.POST },  // rota genérica
-        // Leitura pública de eventos por slug — buyers não precisam de token
-        // GET /events (lista) NÃO é excluído — exige token de organizer
-        { path: 'events/*path', method: RequestMethod.GET },
+        // Leitura pública de eventos — APENAS as duas rotas sem guard:
+        // GET /events/:slug/public e GET /events/:id/public-meta. NÃO usar o
+        // wildcard amplo `events/*path` aqui: ele excluiria também rotas de
+        // organizer que vivem sob /events (ex.: GET /events/dashboard/stats e
+        // GET /events/:id), deixando-as sem o x-organizer-id injetado pelo
+        // gateway → o OrganizerGuard do event-service responderia 401.
+        // GET /events (lista) também NÃO é excluído — exige token de organizer.
+        { path: 'events/:slug/public', method: RequestMethod.GET },
+        { path: 'events/:id/public-meta', method: RequestMethod.GET },
         { path: 'search/*path', method: RequestMethod.GET },
         // GET /categories é público (buyers filtram eventos por categoria)
         // POST /categories NÃO é excluído — exige token de organizer

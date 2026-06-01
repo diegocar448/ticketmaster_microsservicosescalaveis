@@ -71,8 +71,19 @@ export function LoginForm(): React.JSX.Element {
         return;
       }
 
-      // setAuth decodifica o JWT e popula `user` a partir dos claims
+      // setAuth decodifica o JWT e popula `user` a partir dos claims (Zustand
+      // → localStorage, lido por Client Components via api-client).
       setAuth(parsed.data.accessToken, parsed.data.expiresIn);
+
+      // Também grava o access token num cookie NÃO-httpOnly. Por quê?
+      //   - O middleware Edge (proteção de rotas) só enxerga cookies/headers,
+      //     nunca o localStorage — sem este cookie, /dashboard e /checkout
+      //     redirecionariam para /login mesmo logado.
+      //   - Server Components (ex: dashboard) leem o token via next/headers
+      //     cookies() para repassar ao backend no fetch SSR.
+      // Não é regressão de segurança: o token já vivia no localStorage (também
+      // exposto a XSS). O refresh token continua httpOnly, fora do alcance do JS.
+      document.cookie = `access_token=${parsed.data.accessToken}; path=/; max-age=${String(parsed.data.expiresIn)}; SameSite=Lax`;
 
       const fallback = loginAs === 'organizer' ? '/dashboard' : '/';
       router.push(searchParams.get('redirect') ?? fallback);

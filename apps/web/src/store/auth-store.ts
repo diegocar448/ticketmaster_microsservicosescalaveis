@@ -63,6 +63,11 @@ export const useAuthStore = create<AuthState>()(
 
       logout: (): void => {
         set({ accessToken: null, user: null, expiresAt: null });
+        // Expira o cookie access_token (espelho do token p/ middleware/SSR).
+        // `typeof document` evita ReferenceError se logout for chamado no SSR.
+        if (typeof document !== 'undefined') {
+          document.cookie = 'access_token=; path=/; max-age=0; SameSite=Lax';
+        }
         // Revoga o refresh token no servidor (cookie httpOnly)
         void fetch('/auth/logout', {
           method: 'POST',

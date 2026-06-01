@@ -54,6 +54,23 @@ export type EventList = {
   limit: number;
 };
 
+// ─── Tipos do dashboard ───────────────────────────────────────────────────────
+
+export type DashboardStats = {
+  totalRevenue: number;
+  totalTicketsSold: number;
+  activeEvents: number;
+  conversionRate: number; // sempre 0 — ver comentário no método (cap-17)
+  revenueByDay: Array<{ date: string; revenue: number; tickets: number }>;
+  topEvents: Array<{
+    id: string;
+    title: string;
+    sold: number;
+    available: number;
+    revenue: number;
+  }>;
+};
+
 // ─── Repository ───────────────────────────────────────────────────────────────
 
 @Injectable()
@@ -154,6 +171,114 @@ export class EventsRepository {
         ...(status === 'published' ? { publishedAt: new Date() } : {}),
       },
     });
+  }
+
+  /**
+   * Agrega métricas do organizer a partir de eventos e lotes de ingressos.
+   *
+   * Por que calcular em JS e não no banco?
+   *   groupBy do Prisma não suporta cálculos com colunas de tabelas
+   *   relacionadas num único aggregate. Trazer os lotes e computar em JS é
+   *   aceitável para o volume de eventos de um único organizer (dezenas/
+   *   centenas, não milhões).
+   *
+   * TRADE-OFFS HONESTOS:
+   *  1. totalRevenue é ESTIMATIVA bruta — Σ(soldCount × price) no event-service.
+   *     A fonte financeira autoritativa é o payment-service (pagamentos
+   *     confirmados pelo Stripe). Reconciliação fina fica para o cap-18.
+   *  2. revenueByDay é ILUSTRATIVO — distribuímos a receita pelo dia de
+   *     criação do evento (não há tabela de transações diárias aqui).
+   *  3. conversionRate sempre 0 — views não são rastreadas (cap-17 adiciona
+   *     OpenTelemetry). Retornamos 0 tipado para não quebrar o frontend.
+   */
+  async getDashboardStats(organizerId: string): Promise<DashboardStats> {
+    // tenant isolation: SEMPRE filtrar por organizerId
+    const events = await this.prisma.event.findMany({
+      where: { organizerId },
+      include: {
+        ticketBatches: {
+          where: { isVisible: true },
+          select: {
+            price: true,
+            soldCount: true,
+            totalQuantity: true,
+            reservedCount: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100, // limite defensivo — organizers com muitos eventos
+    });
+
+    // ── Totais globais ──────────────────────────────────────────────────────
+    let totalRevenue = 0;
+    let totalTicketsSold = 0;
+    for (const event of events) {
+      for (const batch of event.ticketBatches) {
+        const price = Number(batch.price); // Prisma Decimal → number
+        totalRevenue += batch.soldCount * price;
+        totalTicketsSold += batch.soldCount;
+      }
+    }
+
+    const activeEvents = events.filter(
+      (e) => e.status === 'published' || e.status === 'on_sale',
+    ).length;
+
+    // ── revenueByDay — últimos 30 dias (data de criação como aproximação) ────
+    const revenueMap = new Map<string, { revenue: number; tickets: number }>();
+    // Pré-popular com zeros garante que o gráfico não tenha lacunas
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      revenueMap.set(d.toISOString().slice(0, 10), { revenue: 0, tickets: 0 });
+    }
+
+    for (const event of events) {
+      const key = event.createdAt.toISOString().slice(0, 10);
+      const entry = revenueMap.get(key);
+      if (!entry) continue; // fora da janela de 30 dias
+      for (const batch of event.ticketBatches) {
+        const price = Number(batch.price);
+        entry.revenue += batch.soldCount * price;
+        entry.tickets += batch.soldCount;
+      }
+    }
+
+    const revenueByDay = Array.from(revenueMap.entries()).map(([date, v]) => ({
+      date,
+      revenue: v.revenue,
+      tickets: v.tickets,
+    }));
+
+    // ── Top eventos por soldCount ────────────────────────────────────────────
+    const topEvents = events
+      .map((event) => {
+        const available =
+          event.totalCapacity - event.soldCount - event.reservedCount;
+        const revenue = event.ticketBatches.reduce(
+          (sum, b) => sum + b.soldCount * Number(b.price),
+          0,
+        );
+        return {
+          id: event.id,
+          title: event.title,
+          sold: event.soldCount,
+          available,
+          revenue,
+        };
+      })
+      .sort((a, b) => b.sold - a.sold)
+      .slice(0, 10);
+
+    return {
+      totalRevenue,
+      totalTicketsSold,
+      activeEvents,
+      conversionRate: 0, // real no cap-17 (OpenTelemetry + views tracking)
+      revenueByDay,
+      topEvents,
+    };
   }
 
   async incrementSoldCount(
