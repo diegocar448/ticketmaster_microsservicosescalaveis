@@ -126,7 +126,9 @@ export class SeatLockService {
    */
   async getLockOwner(eventId: string, seatId: string): Promise<string | null> {
     const key = this.buildKey(eventId, seatId);
-    return this.redis.get<string>(key);
+    // `acquireLock` faz SET com ownerId string raw (não JSON). getRaw evita o
+    // JSON.parse do `get<T>` genérico que explode no UUID (hífens não são JSON).
+    return this.redis.getRaw(key);
   }
 
   /**
