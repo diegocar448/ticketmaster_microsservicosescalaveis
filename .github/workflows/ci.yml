@@ -1,17 +1,14 @@
 # .github/workflows/ci.yml
 #
-# Pipeline base — roda em todo PR e push para main.
-# Cada capítulo vai expandir este arquivo:
-#   Cap 02: adiciona db:migrate no job de testes
-#   Cap 14: adiciona testes E2E e load test k6
-#   Cap 15: adiciona build Docker, push ECR, deploy EKS
+# Pipeline completo — expandido progressivamente por capítulo:
+#   Cap 01: lint + type-check + security audit (job quality)
+#   Cap 14: job test ativado (jest unit tests — booking-service SeatLockService)
+#   Cap 15: jobs build (Docker+ECR+Cosign) e deploy (EKS) — só na main
 #
 # ─── Branch Protection ────────────────────────────────────────────────────────
-# Os nomes dos jobs abaixo (name:) são referenciados no script de branch protection:
-#   .github/branch-protection.sh → required_status_checks[contexts][]
-#
-# IMPORTANTE: se renomear um job, atualizar também o branch-protection.sh.
-# Renomear sem atualizar quebra o required check e PRs ficam impossibilitados de merge.
+# Os nomes dos jobs (name:) são referenciados em .github/branch-protection.sh
+# → required_status_checks[contexts]. NUNCA renomear sem atualizar o script —
+# renomear quebra o required check e PRs ficam impossibilitados de merge.
 
 name: CI
 
@@ -21,14 +18,19 @@ on:
   pull_request:
     branches: [main]
 
-# Cancelar runs anteriores do mesmo PR (economiza minutos do GitHub Actions)
+# Cancela runs anteriores do MESMO ref (economiza minutos do Actions).
+# O job deploy sobrescreve isso com concurrency própria (não cancelar deploy).
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+
 jobs:
-  # ─── Qualidade de código ──────────────────────────────────────────────────────
-  # Nome "Lint & Type Check" é referenciado no branch-protection.sh — não renomear
+  # ─── 1. Qualidade de Código ────────────────────────────────────────────────
+  # NÃO renomear "Lint & Type Check" — referenciado em branch-protection.sh
   quality:
     name: Lint & Type Check
     runs-on: ubuntu-latest
@@ -57,49 +59,175 @@ jobs:
           restore-keys: |
             turbo-${{ runner.os }}-
 
-      # Lint em todos os pacotes em paralelo via Turborepo
+      # Scripts do package.json raiz delegam ao Turborepo (turbo run X)
       - name: Lint
         run: pnpm turbo run lint
 
-      # Type-check — TypeScript strict mode, sem any
       - name: Type Check
         run: pnpm turbo run type-check
 
-      # Auditoria de segurança de dependências (OWASP A06)
+      # Auditoria de segurança de dependências (OWASP A06).
+      # Para corrigir uma vulnerabilidade: adicionar override em pnpm.overrides
+      # no package.json raiz e regenerar o lockfile com pnpm install --lockfile-only.
       - name: Security Audit
         run: pnpm audit --audit-level=high
-        # continue-on-error: true  ← descomente se quiser não bloquear na auditoria
 
-  # ─── Testes unitários ─────────────────────────────────────────────────────────
-  # Nome "Unit Tests" é referenciado no branch-protection.sh — não renomear
-  # DESABILITADO EM CAP 01: Jest será integrado em Cap 02 junto com Prisma
-  # test:
-  #   name: Unit Tests
-  #   runs-on: ubuntu-latest
-  #   needs: quality # só roda se lint/type-check passaram
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #
-  #     - uses: pnpm/action-setup@v4
-  #
-  #     - uses: actions/setup-node@v4
-  #       with:
-  #         node-version: 22
-  #         cache: pnpm
-  #
-  #     - name: Install dependencies
-  #       run: pnpm install --frozen-lockfile
-  #
-  #     - name: Cache Turborepo
-  #       uses: actions/cache@v4
-  #       with:
-  #         path: .turbo
-  #         key: turbo-${{ runner.os }}-${{ github.sha }}
-  #         restore-keys: |
-  #           turbo-${{ runner.os }}-
-  #
-  #     # Turborepo cache: se o código não mudou, reutiliza resultado anterior
-  #     - name: Run Tests
-  #       run: pnpm turbo run test
-  #       env:
-  #         NODE_ENV: test
+  # ─── 2. Testes ────────────────────────────────────────────────────────────
+  # NÃO renomear "Tests" — referenciado em branch-protection.sh
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: quality
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: showpass_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-retries 5
+      redis:
+        image: redis:8.6-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache Turborepo
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-
+
+      - name: Generate Prisma Clients
+        run: pnpm turbo run db:generate
+
+      # Testes unitários — sem Redis/Postgres reais (mock no spec).
+      # O teste de concorrência (test:e2e) requer Redis com senha e não roda
+      # no Redis sem auth do CI; fica como gate local (make test:e2e).
+      - name: Unit Tests
+        run: pnpm --filter @showpass/booking-service run test
+        env:
+          NODE_ENV: test
+
+  # ─── 3. Build & Push Docker ───────────────────────────────────────────────
+  # Só roda após merge na main (não em PR).
+  # Matrix paralela: 8 serviços buildam ao mesmo tempo sem gargalo.
+  build:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        service: [api-gateway, auth-service, event-service, booking-service, payment-service, search-service, worker-service, web]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # UM único bloco env: por step (duas chaves env: no mesmo step é YAML
+      # inválido — a segunda sobrescreveria a primeira, perdendo IMAGE_TAG).
+      - name: Build, sign, and push Docker image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          SERVICE: ${{ matrix.service }}
+          COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          # Cada serviço tem seu próprio Dockerfile em apps/<svc>/Dockerfile
+          # (stage prod — sem devDependencies, imagem mínima).
+          docker build \
+            --target prod \
+            --tag $ECR_REGISTRY/showpass-$SERVICE:$IMAGE_TAG \
+            --tag $ECR_REGISTRY/showpass-$SERVICE:latest \
+            --cache-from $ECR_REGISTRY/showpass-$SERVICE:latest \
+            --file apps/$SERVICE/Dockerfile \
+            .
+
+          # Push ANTES de assinar — Cosign assina por digest no registry
+          docker push $ECR_REGISTRY/showpass-$SERVICE:$IMAGE_TAG
+          docker push $ECR_REGISTRY/showpass-$SERVICE:latest
+
+          # Assinatura keyed (OWASP A08). Mesma chave usada no cosign verify
+          # (ver "Testando na prática" no cap-15).
+          cosign sign --yes --key env://COSIGN_KEY \
+            $ECR_REGISTRY/showpass-$SERVICE:$IMAGE_TAG
+
+  # ─── 4. Deploy no EKS ─────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build
+    environment: production
+    # Nunca cancelar deploy em andamento (evita estado inconsistente no cluster)
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name showpass-production
+
+      - name: Update image tags in Kustomize
+        run: |
+          cd infra/k8s/overlays/production
+          for svc in api-gateway auth-service event-service booking-service \
+                     payment-service search-service worker-service web; do
+            kustomize edit set image \
+              showpass-$svc=$ECR_REGISTRY/showpass-$svc:${{ github.sha }}
+          done
+
+      - name: Deploy
+        run: |
+          kustomize build infra/k8s/overlays/production | kubectl apply -f -
+
+      - name: Aguardar rollout
+        run: |
+          # Nomes dos Deployments == nomes dos serviços (ver cap-16)
+          for d in api-gateway event-service booking-service payment-service; do
+            kubectl rollout status deployment/$d -n showpass --timeout=300s
+          done
+
+      - name: Smoke test pós-deploy
+        run: |
+          # /health/ready é agregado pelo api-gateway (checa event + booking)
+          curl -sf https://api.showpass.com.br/health/ready | grep '"status":"ok"'
