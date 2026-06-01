@@ -76,6 +76,17 @@ export class RedisService {
     return JSON.parse(raw) as T;
   }
 
+  /**
+   * Lê o valor cru (sem JSON.parse). Para chaves cujo conteúdo NÃO é JSON —
+   * em particular os locks, onde `acquireLock` faz SET com `ownerId` string raw.
+   * Usar `get<string>` nesses casos quebra com "Unexpected non-whitespace
+   * character after JSON" assim que o UUID com hífens chega ao parser.
+   * Aditivo: não toca os Lua scripts críticos de acquireLock/releaseLock/renewLock.
+   */
+  async getRaw(key: string): Promise<string | null> {
+    return this.redis.get(key);
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- T garante type-safety no caller (set<Event>(key, event))
   async set<T>(key: string, value: T, ttlSeconds?: number): Promise<void> {
     const serialized = JSON.stringify(value);

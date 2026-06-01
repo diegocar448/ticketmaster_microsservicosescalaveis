@@ -639,7 +639,8 @@ Neste ponto os arquivos têm os valores padrão do `.env.example`. O campo `JWT_
 # Makefile — comandos do dia a dia
 
 .PHONY: setup dev dev-services dev-stop dev-status dev-logs \
-        build test lint up down compose-build ascii-link \
+        build test lint type-check audit ci \
+        up down compose-build ascii-link \
         infra-up infra-down db-migrate db-seed gen-keys clean
 
 # ─── Docker Compose — workaround do "ç" no caminho ────────────────────────────
@@ -754,6 +755,20 @@ test:
 
 test-e2e:
 	pnpm run test:e2e
+
+# Mesmo gate que o GitHub Actions roda no job "Security Audit":
+# checa advisories vivos no registry e falha em qualquer vuln >= high.
+# Para corrigir: adicione um override em package.json `pnpm.overrides` e
+# regenere o lockfile com `pnpm install --lockfile-only`.
+audit:
+	pnpm audit --audit-level=high
+
+# Espelho EXATO do job "Lint & Type Check" do .github/workflows/ci.yml.
+# Rode antes de empurrar — passando aqui, passa no GitHub.
+# (test/test-e2e ficam fora porque o CI ainda não tem Postgres/Redis no runner;
+# rode `make test` separadamente quando for executar a suíte completa.)
+ci: lint type-check audit
+	@echo "✅ Espelho do CI passou localmente — seguro para git push"
 
 # ─── Build & Deploy ───────────────────────────────────────────────────────────
 build:

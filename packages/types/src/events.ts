@@ -134,9 +134,11 @@ export const SeatResponseSchema = z.object({
   id: z.uuid(),
   row: z.string(),
   number: z.number().int(),
-  // Coordenadas do mapa SVG (se a venue tiver layout posicional)
-  mapX: z.number().nullable(),
-  mapY: z.number().nullable(),
+  // Coordenadas do mapa SVG (se a venue tiver layout posicional).
+  // Prisma Decimal vira string no JSON — z.coerce.number() converte sem perder
+  // precisão (idêntico ao TicketBatchResponseSchema.price).
+  mapX: z.coerce.number().nullable(),
+  mapY: z.coerce.number().nullable(),
 });
 
 export const SectionResponseSchema = z.object({

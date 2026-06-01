@@ -9,6 +9,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ReservationsService } from './reservations.service.js';
@@ -131,13 +132,24 @@ export class ReservationsController {
 
   /**
    * Verificar disponibilidade de assentos em tempo real.
-   * Chamado pelo frontend a cada 10 segundos para atualizar o mapa visual.
+   * Chamado pelo frontend (cap-11) a cada 8 segundos para atualizar o mapa.
+   *
+   * Por que @Query em vez de @Body?
+   * HTTP GET semanticamente não tem body. Nginx, AWS ALB e muitos
+   * intermediários descartam o body silenciosamente — a requisição chega
+   * ao NestJS com seatIds = undefined e o retorno fica sempre vazio.
+   * Query params são a forma canônica de filtros em GET requests (REST).
+   *
+   * Exemplo: GET /bookings/reservations/availability/uuid?seatIds=a,b,c
    */
   @Get('availability/:eventId')
   getAvailability(
     @Param('eventId', ParseUUIDPipe) eventId: string,
-    @Body('seatIds') seatIds: string[],
+    @Query('seatIds') seatIds: string,
   ): ReturnType<SeatLockService['checkAvailability']> {
-    return this.seatLock.checkAvailability(eventId, seatIds);
+    // split(',') em string vazia retorna [''] — filtramos para não passar
+    // UUIDs vazios ao SeatLockService (causaria query malformada no Redis).
+    const ids = seatIds ? seatIds.split(',').filter(Boolean) : [];
+    return this.seatLock.checkAvailability(eventId, ids);
   }
 }
