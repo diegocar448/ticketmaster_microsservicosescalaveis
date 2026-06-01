@@ -1,0 +1,43 @@
+# .github/workflows/pr-selective-tests.yml
+#
+# Testes seletivos por PR — roda APENAS os pacotes afetados pela PR.
+# Usa `turbo run test --filter="...[origin/main]"` para detectar o diff.
+#
+# Por que um workflow SEPARADO e não um job em ci.yml?
+# O ci.yml roda a suíte completa (required check, bloqueia o merge).
+# Este é um sinal RÁPIDO e informativo durante a revisão — não required,
+# não acoplado ao branch-protection.sh, e mostra exatamente qual serviço
+# foi impactado pela PR.
+
+name: PR Selective Tests
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  selective-tests:
+    name: Testes seletivos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 — o filtro "[origin/main]" precisa do histórico
+          # completo para calcular o diff de pacotes afetados pelo PR
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Só roda os pacotes que mudaram (e seus dependentes).
+      # Ex: mudança no booking-service → booking-service:test roda,
+      #     auth-service:test é skipped (não afetado).
+      - name: Testes nos pacotes afetados
+        run: pnpm turbo run test --filter="...[origin/main]"

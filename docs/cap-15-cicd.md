@@ -107,21 +107,24 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Run migrations
-        run: pnpm run db:migrate
-        env:
-          DATABASE_URL: postgresql://test:test@localhost:5432/showpass_test
-
-      - name: Unit & Integration Tests
-        run: pnpm run test
-        env:
-          DATABASE_URL: postgresql://test:test@localhost:5432/showpass_test
-          REDIS_URL: redis://localhost:6379
-
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
+      - name: Cache Turborepo
+        uses: actions/cache@v4
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-
+
+      - name: Generate Prisma Clients
+        run: pnpm turbo run db:generate
+
+      # Testes unitários — sem Redis/Postgres reais (mock no spec).
+      # O teste de concorrência (test:e2e) requer Redis com senha e não roda
+      # no Redis sem auth do CI; fica como gate local (make test:e2e).
+      - name: Unit Tests
+        run: pnpm --filter @showpass/booking-service run test
+        env:
+          NODE_ENV: test
 
   # ─── 3. Build & Push Docker ───────────────────────────────────────────────
   build:
@@ -156,15 +159,15 @@ jobs:
           COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         run: |
-          # Build multi-stage (stage prod). O Dockerfile compartilhado usa
-          # ARG SERVICE_NAME para selecionar o serviço.
+          # Cada serviço tem seu próprio Dockerfile em apps/<svc>/Dockerfile
+          # (stage prod — sem devDependencies, imagem mínima).
+          # infra/docker/nestjs.Dockerfile é documentação do padrão, não usado aqui.
           docker build \
-            --build-arg SERVICE_NAME=$SERVICE \
             --target prod \
             --tag $ECR_REGISTRY/showpass-$SERVICE:$IMAGE_TAG \
             --tag $ECR_REGISTRY/showpass-$SERVICE:latest \
             --cache-from $ECR_REGISTRY/showpass-$SERVICE:latest \
-            --file infra/docker/nestjs.Dockerfile \
+            --file apps/$SERVICE/Dockerfile \
             .
 
           # Push ANTES de assinar — Cosign assina por digest no registry
