@@ -443,6 +443,11 @@ export const useAuthStore = create<AuthState>()(
 
       logout: () => {
         set({ accessToken: null, user: null, expiresAt: null });
+        // Expira o cookie access_token (espelho do token p/ middleware/SSR).
+        // typeof document evita ReferenceError se logout rodar no SSR.
+        if (typeof document !== 'undefined') {
+          document.cookie = 'access_token=; path=/; max-age=0; SameSite=Lax';
+        }
         // Chamar endpoint de logout para revogar o refresh token no servidor (cookie httpOnly)
         fetch('/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
       },
@@ -514,7 +519,10 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     return NextResponse.next();
   }
 
-  // Extrair token do header (Client Components) ou cookie (SSR)
+  // Extrair token do header ou do cookie `access_token`. O Edge Runtime NÃO
+  // enxerga o localStorage (onde o Zustand guarda o token) — só cookies e
+  // headers. Por isso o login (Passo 10.8) grava o token também num cookie:
+  // sem ele, toda rota protegida cairia no redirect abaixo mesmo logado.
   const authHeader = request.headers.get('authorization');
   const token = authHeader?.replace('Bearer ', '') ??
     request.cookies.get('access_token')?.value;
@@ -745,8 +753,19 @@ export function LoginForm(): React.JSX.Element {
         return;
       }
 
-      // setAuth decodifica o JWT e popula `user` a partir dos claims
+      // setAuth decodifica o JWT e popula `user` a partir dos claims (Zustand
+      // → localStorage, lido por Client Components via api-client).
       setAuth(parsed.data.accessToken, parsed.data.expiresIn);
+
+      // Também grava o access token num cookie NÃO-httpOnly. Por quê?
+      //   - O middleware Edge (Passo 10.6) só enxerga cookies/headers, nunca o
+      //     localStorage — sem este cookie, /dashboard e /checkout
+      //     redirecionariam para /login mesmo logado.
+      //   - Server Components (ex: dashboard do cap-13) leem o token via
+      //     next/headers cookies() para repassar ao backend no fetch SSR.
+      // Não é regressão de segurança: o token já vivia no localStorage (também
+      // exposto a XSS). O refresh token continua httpOnly, fora do alcance do JS.
+      document.cookie = `access_token=${parsed.data.accessToken}; path=/; max-age=${String(parsed.data.expiresIn)}; SameSite=Lax`;
 
       const fallback = loginAs === 'organizer' ? '/dashboard' : '/';
       router.push(searchParams.get('redirect') ?? fallback);

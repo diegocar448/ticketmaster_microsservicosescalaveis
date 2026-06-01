@@ -87,6 +87,22 @@ export class EventsController {
     });
   }
 
+  /**
+   * GET /events/dashboard/stats — métricas agregadas do organizer.
+   *
+   * Rota dedicada (não polui o recurso /events com semântica de agregação).
+   * DEVE vir ANTES de @Get(':id'): o NestJS casa rotas na ordem de declaração;
+   * se :id viesse primeiro, "dashboard" seria tratado como UUID e o
+   * ParseUUIDPipe rejeitaria com 400.
+   */
+  @Get('dashboard/stats')
+  @UseGuards(OrganizerGuard)
+  getDashboardStats(
+    @CurrentUser() user: AuthenticatedUser,
+  ): ReturnType<EventsService['getDashboardStats']> {
+    return this.eventsService.getDashboardStats(this.assertOrganizerId(user));
+  }
+
   @Get(':id')
   @UseGuards(OrganizerGuard)
   getById(

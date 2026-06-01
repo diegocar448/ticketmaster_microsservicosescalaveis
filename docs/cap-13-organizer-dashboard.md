@@ -232,11 +232,75 @@ Adicione a rota dentro da classe `EventsController`, após a rota `list`:
 
 > **Atenção à ordem das rotas no NestJS:** a rota `GET dashboard/stats` (literal) deve ser declarada **antes** de `GET :id` (dinâmico) para o NestJS não interpretar a string `"dashboard"` como um UUID e falhar no `ParseUUIDPipe`. Já é o caso no código acima — basta manter a ordem ao adicionar.
 
+### Ajuste no API Gateway — exclusão de auth não pode ser ampla demais
+
+Há uma armadilha sutil no gateway. No cap-03 a leitura pública de eventos foi liberada com um wildcard amplo:
+
+```typescript
+// apps/api-gateway/src/app.module.ts (ANTES — amplo demais)
+{ path: 'events/*path', method: RequestMethod.GET },
+```
+
+Esse padrão exclui da validação JWT **todo** `GET /events/*` — inclusive a nova rota `GET /events/dashboard/stats`, que é de organizer. Sem passar pelo `JwtAuthMiddleware`, o gateway não injeta o header `x-organizer-id`, e o `OrganizerGuard` do event-service responde **401 "Não autenticado"** — mesmo com um token válido.
+
+A correção é estreitar a exclusão para **apenas** as duas rotas realmente públicas (sem guard):
+
+```typescript
+// apps/api-gateway/src/app.module.ts (DEPOIS — só as públicas)
+{ path: 'events/:slug/public', method: RequestMethod.GET },
+{ path: 'events/:id/public-meta', method: RequestMethod.GET },
+```
+
+`events/:slug/public` casa `events/<slug>/public`, mas **não** `events/dashboard/stats` (o último segmento literal `public` não bate com `stats`). Assim `dashboard/stats` volta a exigir auth, enquanto a página pública do evento segue liberada. `GET /events` (lista) nunca foi excluído — sempre exigiu token de organizer.
+
 ---
 
 ## Passo 13.2 — Dashboard Page (Server Component)
 
 Com o endpoint real existindo, o frontend pode consumi-lo. O `DashboardStatsSchema` é declarado no frontend para manter o arquivo simples — se outros serviços precisarem desse tipo, mova para `@showpass/types`.
+
+#### Auth em Server Components — `apiRequestServer`
+
+O `apiRequest` do cap-10 lê o token do **Zustand**, que vive no `localStorage` do browser. Um **Server Component não tem `localStorage`** — no servidor, `useAuthStore.getState().accessToken` é sempre `null`. Se a página chamasse `apiRequest` direto, o fetch sairia sem `Authorization` e o backend devolveria 401.
+
+A solução: ler o token do **cookie `access_token`** (gravado no login — ver cap-10) via `next/headers`. Criamos um helper server-only:
+
+```typescript
+// apps/web/src/lib/api-server.ts
+//
+// Variante server-only do api-client. Server Components e Route Handlers NÃO
+// têm acesso ao Zustand (localStorage do browser) — o token vem do cookie
+// `access_token` via next/headers cookies().
+//
+// `import 'server-only'` quebra o build se um Client Component importar isto.
+import 'server-only';
+
+import { cookies } from 'next/headers';
+import type { ZodType } from 'zod';
+import { apiRequest } from './api-client';
+
+export async function apiRequestServer<T>(
+  path: string,
+  schema: ZodType<T>,
+  options: RequestInit = {},
+): Promise<T> {
+  const cookieStore = await cookies();
+  const token = cookieStore.get('access_token')?.value;
+
+  // new Headers() normaliza HeadersInit sem spread (evita no-misused-spread).
+  const headers = new Headers(options.headers);
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+
+  // skipAuth evita o lookup do Zustand (null no servidor); o token vai
+  // explícito a partir do cookie. Sem refresh server-side — o middleware Edge
+  // já barra tokens expirados antes de chegar aqui.
+  return apiRequest(path, schema, { ...options, skipAuth: true, headers });
+}
+```
+
+> Esse mesmo helper serve o Route Handler de export CSV (Passo 13.4) — `cookies()` funciona tanto em Server Components quanto em Route Handlers.
+
+A página do dashboard:
 
 ```typescript
 // apps/web/src/app/(organizer)/dashboard/page.tsx
@@ -245,7 +309,7 @@ Com o endpoint real existindo, o frontend pode consumi-lo. O `DashboardStatsSche
 // Client Components apenas para gráficos interativos (Recharts precisa do DOM).
 
 import { Suspense } from 'react';
-import { apiRequest } from '@/lib/api-client';
+import { apiRequestServer } from '@/lib/api-server';
 import { z } from 'zod';
 import { SalesChart } from '@/components/dashboard/sales-chart';
 import { MetricCard } from '@/components/dashboard/metric-card';
@@ -272,8 +336,9 @@ const DashboardStatsSchema = z.object({
 });
 
 export default async function DashboardPage() {
-  // Server Component async — fetch ocorre no servidor, resultado no HTML inicial
-  const stats = await apiRequest('/events/dashboard/stats', DashboardStatsSchema);
+  // Server Component async — fetch ocorre no servidor (token via cookie),
+  // resultado já no HTML inicial. Sem loading state para as métricas.
+  const stats = await apiRequestServer('/events/dashboard/stats', DashboardStatsSchema);
 
   return (
     <div className="p-8">
@@ -365,9 +430,41 @@ function ExportCsvButton() {
 }
 ```
 
+O `MetricCard` é um card de KPI sem estado — server-safe, renderiza junto com a página sem custo de hidratação:
+
+```typescript
+// apps/web/src/components/dashboard/metric-card.tsx
+
+interface MetricCardProps {
+  title: string;
+  value: string;
+  icon: string;
+  trend?: string;  // legenda secundária (ex: "estimativa bruta")
+}
+
+export function MetricCard({ title, value, icon, trend }: MetricCardProps) {
+  return (
+    <div className="bg-white rounded-2xl border p-5">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm text-gray-500">{title}</span>
+        <span className="text-xl" aria-hidden="true">{icon}</span>
+      </div>
+      <p className="text-2xl font-bold">{value}</p>
+      {trend && <p className="text-xs text-gray-400 mt-1">{trend}</p>}
+    </div>
+  );
+}
+```
+
 ---
 
 ## Passo 13.3 — Sales Chart (Recharts)
+
+Instale o Recharts (3.x — compatível com React 19) no app web:
+
+```bash
+pnpm --filter @showpass/web add recharts
+```
 
 ```typescript
 // apps/web/src/components/dashboard/sales-chart.tsx
@@ -416,12 +513,18 @@ export function SalesChart({ data }: { data: DayData[] }) {
         />
         <YAxis yAxisId="tickets" orientation="right" tick={{ fontSize: 12 }} />
         <Tooltip
-          formatter={(value: number, name: string) => [
-            name === 'revenue'
-              ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)
-              : value,
-            name === 'revenue' ? 'Receita' : 'Ingressos',
-          ]}
+          // Recharts 3: `value` é ValueType|undefined e `name` é o NOME da
+          // série (definido em name="Receita"/"Ingressos" abaixo), NÃO a
+          // dataKey. Comparar com 'revenue' aqui seria sempre falso.
+          formatter={(value, name) => {
+            const num = typeof value === 'number' ? value : Number(value ?? 0);
+            return [
+              name === 'Receita'
+                ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(num)
+                : num,
+              name,
+            ];
+          }}
         />
         <Legend />
         <Bar yAxisId="revenue" dataKey="revenue" fill="#3b82f6" radius={[4, 4, 0, 0]} name="Receita" />
@@ -456,7 +559,7 @@ O Route Handler reutiliza o endpoint `/events/dashboard/stats` já implementado.
 //   Este handler age como BFF (Backend for Frontend) para operações de export.
 
 import { NextResponse } from 'next/server';
-import { apiRequest } from '@/lib/api-client';
+import { apiRequestServer } from '@/lib/api-server';  // lê o cookie (server-side)
 import { z } from 'zod';
 
 // Schema idêntico ao do DashboardPage — reutilizar evita drift.
@@ -475,7 +578,7 @@ const DashboardStatsForExportSchema = z.object({
 
 export async function GET(): Promise<NextResponse> {
   // Buscar apenas o que o CSV precisa — topEvents é suficiente
-  const { topEvents } = await apiRequest(
+  const { topEvents } = await apiRequestServer(
     '/events/dashboard/stats',
     DashboardStatsForExportSchema,
   );
@@ -488,7 +591,10 @@ export async function GET(): Promise<NextResponse> {
       `"${e.title.replace(/"/g, '""')}"`,  // escapar aspas duplas no CSV (RFC 4180)
       e.sold,
       e.available,
-      e.revenue.toFixed(2).replace('.', ','),  // formato pt-BR: vírgula decimal
+      // pt-BR usa vírgula decimal — que COLIDE com o separador CSV (vírgula).
+      // A receita PRECISA ser aspeada, senão "200,00" vira duas colunas
+      // (200 e 00) ao abrir no Excel ou em qualquer parser RFC 4180.
+      `"${e.revenue.toFixed(2).replace('.', ',')}"`,
     ].join(','),
   );
 
