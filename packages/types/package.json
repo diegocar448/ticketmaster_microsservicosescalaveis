@@ -12,6 +12,7 @@
     },
     "./nest": {
       "types": "./src/decorators/current-user.decorator.ts",
+      "require": "./dist/decorators/current-user.decorator.js",
       "import": "./dist/decorators/current-user.decorator.js",
       "default": "./dist/decorators/current-user.decorator.js"
     }
