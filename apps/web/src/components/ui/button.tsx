@@ -1,10 +1,10 @@
 // apps/web/src/components/ui/button.tsx
 //
-// Versão mínima compatível com a API do shadcn/ui (variant/size opcionais).
+// Versão mínima compatível com a API do shadcn/ui (variant/size + asChild).
 // Capítulos seguintes podem substituir pelo componente gerado pelo CLI.
 
-import type React from 'react';
-import type { ButtonHTMLAttributes } from 'react';
+import React from 'react';
+import type { ButtonHTMLAttributes, ReactElement } from 'react';
 
 type Variant = 'default' | 'outline';
 type Size = 'default' | 'lg';
@@ -12,6 +12,9 @@ type Size = 'default' | 'lg';
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
   size?: Size;
+  // asChild renderiza no elemento filho (ex: <Link>) em vez de <button>,
+  // mesclando as classes — padrão shadcn (sem @radix-ui/react-slot).
+  asChild?: boolean;
 }
 
 const base =
@@ -31,12 +34,23 @@ export function Button({
   variant = 'default',
   size = 'default',
   className = '',
+  asChild = false,
+  children,
   ...props
 }: ButtonProps): React.JSX.Element {
+  const merged = `${base} ${variants[variant]} ${sizes[size]} ${className}`;
+
+  if (asChild && React.isValidElement(children)) {
+    // Mescla a classe Tailwind no elemento filho (tipicamente <Link>).
+    const child = children as ReactElement<{ className?: string }>;
+    return React.cloneElement(child, {
+      className: `${merged} ${child.props.className ?? ''}`.trim(),
+    });
+  }
+
   return (
-    <button
-      className={`${base} ${variants[variant]} ${sizes[size]} ${className}`}
-      {...props}
-    />
+    <button className={merged} {...props}>
+      {children}
+    </button>
   );
 }
