@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "module": "CommonJS",
+    "moduleResolution": "node16",
+    "esModuleInterop": true,
+    "paths": {
+      "@showpass/types": ["../../packages/types/src/index.ts"],
+      "@showpass/types/nest": ["../../packages/types/src/decorators/current-user.decorator.ts"],
+      "@showpass/redis": ["../../packages/redis/src/index.ts"],
+      "@showpass/kafka": ["../../packages/kafka/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*", "test/**/*"],
+  "exclude": ["node_modules", "dist", "prisma/generated"]
+}
