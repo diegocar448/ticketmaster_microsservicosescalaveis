@@ -249,7 +249,8 @@ A correção é forçar versões corrigidas via **`pnpm.overrides`** no
     "axios": "^1.16.1",
     "basic-ftp": ">=5.3.1",
     "fast-uri": ">=3.1.2",
-    "next": ">=16.2.6"
+    "next": ">=16.2.6",
+    "js-cookie": ">=3.0.7"
   }
 }
 ```
@@ -264,6 +265,37 @@ A correção é forçar versões corrigidas via **`pnpm.overrides`** no
 > `pnpm-lock.yaml`) e confirme com `pnpm audit --audit-level=high` (exit 0 =
 > zero high). O lockfile atualizado **tem que entrar no commit** — o CI usa
 > `--frozen-lockfile`.
+
+---
+
+### Reproduzindo o gate de CI localmente — `make ci`
+
+Para evitar `git push` "no escuro", o `Makefile` (Cap 01) expõe um alvo
+`ci` que é o **espelho exato** do job "Lint & Type Check" do GitHub Actions:
+
+```bash
+make ci    # lint + type-check + audit (--audit-level=high)
+           # ✅ passando aqui → vai passar no Actions
+```
+
+Cada peça também é rodável isoladamente quando você está iterando:
+
+```bash
+make lint        # ESLint em todos os pacotes
+make type-check  # tsc --noEmit em todos os pacotes
+make audit       # pnpm audit --audit-level=high (mesma flag do .yml)
+```
+
+Por que `make ci` **não** inclui `make test`? O CI atual ainda não orquestra
+Postgres/Redis/Kafka como serviços do runner — os testes locais dependem da
+infra docker-compose. Rode `make test` em separado quando precisar (depois de
+`make infra-up`); o gate do GitHub não cobre essa parte.
+
+> **Fluxo recomendado antes de `git push`:** `make ci`. Se algo quebrar:
+> `make audit` → caiu por vuln → adicione `pnpm.overrides` (este passo) +
+> `pnpm install --lockfile-only`; `make lint`/`type-check` → caiu por código
+> → corrija e rode de novo. Custa ~5 min e elimina o ciclo
+> push → CI vermelho → fix → push.
 
 ---
 
