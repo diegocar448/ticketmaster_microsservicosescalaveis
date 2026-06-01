@@ -260,7 +260,14 @@
       "Bash(tee /tmp/showpass-logs/dockerbuild-final.log)",
       "Bash(timeout 1800 make compose-build)",
       "Bash(tee /tmp/showpass-logs/dockerbuild-all.log)",
-      "Bash(gh pr *)"
+      "Bash(gh pr *)",
+      "Bash(pnpm --filter @showpass/web --filter @showpass/booking-service run type-check)",
+      "Bash(pnpm --filter @showpass/web --filter @showpass/booking-service run lint)",
+      "Bash(pnpm --filter @showpass/web run lint)",
+      "Bash(pnpm --filter @showpass/web run build)",
+      "Bash(pnpm --filter @showpass/web run dev)",
+      "Bash(tee /tmp/showpass-logs/next-dev-cap11.log)",
+      "Bash(pkill -f \"next dev\")"
     ],
     "additionalDirectories": [
       "/tmp",
