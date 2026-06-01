@@ -4,7 +4,7 @@
 #      make dev         → sobe infra + inicia todos os serviços em modo watch
 
 .PHONY: dev dev-services dev-stop dev-status dev-logs \
-        build test lint type-check \
+        build test lint type-check audit ci \
         up down compose-build ascii-link \
         infra-up infra-down infra-logs kafka-topics \
         db-generate db-migrate db-seed db-studio \
@@ -123,9 +123,19 @@ test:
 test-e2e:
 	pnpm run test:e2e
 
-# Simular pipeline CI localmente (mesmo que roda no GitHub Actions)
-ci: lint type-check test
-	@echo "✅ CI passou localmente"
+# Mesmo gate que o GitHub Actions roda no job "Security Audit":
+# checa advisories vivos no registry e falha em qualquer vuln >= high.
+# Para corrigir: adicione um override em package.json `pnpm.overrides` e
+# regenere o lockfile com `pnpm install --lockfile-only`.
+audit:
+	pnpm audit --audit-level=high
+
+# Espelho EXATO do job "Lint & Type Check" do .github/workflows/ci.yml.
+# Rode antes de empurrar — passando aqui, passa no GitHub.
+# (test/test-e2e ficam fora porque o CI ainda não tem Postgres/Redis no runner;
+# rode `make test` separadamente quando for executar a suíte completa.)
+ci: lint type-check audit
+	@echo "✅ Espelho do CI passou localmente — seguro para git push"
 
 # ─── Build & Deploy ───────────────────────────────────────────────────────────
 
@@ -221,9 +231,10 @@ help:
 	@echo "Qualidade:"
 	@echo "  make lint         ESLint em todos os pacotes"
 	@echo "  make type-check   TypeScript check em todos os pacotes"
+	@echo "  make audit        pnpm audit --audit-level=high (mesmo do GitHub Actions)"
 	@echo "  make test         Testes unitários"
 	@echo "  make test-e2e     Testes E2E (Playwright)"
-	@echo "  make ci           Simula pipeline CI localmente"
+	@echo "  make ci           Espelho do CI (lint + type-check + audit) — rode antes do git push"
 	@echo ""
 	@echo "Build:"
 	@echo "  make build        Build de produção de todos os serviços"
