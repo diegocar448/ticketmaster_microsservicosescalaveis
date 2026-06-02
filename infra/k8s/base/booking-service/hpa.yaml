@@ -1,0 +1,42 @@
+# infra/k8s/base/booking-service/hpa.yaml
+#
+# O booking-service é o serviço mais crítico em picos de demanda.
+# Durante o show do Bruno Mars, pode escalar de 3 para 50 pods em minutos.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: booking-service-hpa
+  namespace: showpass
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: booking-service
+  minReplicas: 3 # mínimo: sempre disponível
+  maxReplicas: 50 # máximo: durante picos como shows de Bruno Mars
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70 # escalar quando CPU > 70%
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30 # escalar rápido em picos
+      policies:
+        - type: Pods
+          value: 10 # adicionar até 10 pods de uma vez
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300 # escalar para baixo devagar (5 min)
+      policies:
+        - type: Pods
+          value: 2 # remover no máximo 2 pods por vez
+          periodSeconds: 60

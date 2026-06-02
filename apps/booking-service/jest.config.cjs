@@ -13,9 +13,15 @@ module.exports = {
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],
   // Apenas unit tests (src/**/*.spec.ts)
   testMatch: ['**/?(*.)+(spec).ts?(x)'],
-  // Mapear imports com extensão .js para .ts — NodeNext usa .js em imports
+  // Mapear imports com extensão .js para .ts (NodeNext usa .js) E os packages
+  // workspace para o src direto — sem isso o unit test não resolve @showpass/*
+  // num checkout limpo (CI), onde os dist/ dos packages ainda não foram buildados.
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
+    '^@showpass/types/nest$': '<rootDir>/../../packages/types/src/decorators/current-user.decorator.ts',
+    '^@showpass/types$': '<rootDir>/../../packages/types/src/index.ts',
+    '^@showpass/redis$': '<rootDir>/../../packages/redis/src/index.ts',
+    '^@showpass/kafka$': '<rootDir>/../../packages/kafka/src/index.ts',
   },
   collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts', '!src/**/index.ts'],
 };

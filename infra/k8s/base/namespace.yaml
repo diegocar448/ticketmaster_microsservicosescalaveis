@@ -1,0 +1,9 @@
+# infra/k8s/base/namespace.yaml
+# Todos os recursos do ShowPass vivem no namespace `showpass`.
+# Ver infra/CLAUDE.md: NUNCA criar recursos em `default`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: showpass
+  labels:
+    app.kubernetes.io/part-of: showpass

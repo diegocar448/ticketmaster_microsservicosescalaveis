@@ -1,0 +1,23 @@
+# infra/k8s/base/booking-service/service.yaml
+#
+# ClusterIP — http://booking-service resolve via DNS interno do cluster.
+# port 80 (entrada do Service) → targetPort 3004 (porta do container).
+# O api-gateway chama http://booking-service:3004/health/live; outros chamadores
+# internos podem usar a porta 80 do Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: booking-service
+  namespace: showpass
+  labels:
+    app: booking-service
+spec:
+  selector:
+    app: booking-service
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3004
+    - name: http-direct
+      port: 3004
+      targetPort: 3004
