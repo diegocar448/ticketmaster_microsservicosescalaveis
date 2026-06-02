@@ -1,0 +1,90 @@
+# infra/k8s/_dev-deps.yaml
+# Postgres + Redis + Kafka MÍNIMOS para o teste local do cap-16 no kind.
+# NÃO faz parte do deploy de produção (lá vêm do Terraform: RDS + ElastiCache +
+# cluster Kafka). Service names + credenciais batem com o overlay staging.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: postgres, namespace: showpass }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata: { labels: { app: postgres } }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:18-alpine
+          env:
+            - { name: POSTGRES_USER, value: booking_svc }
+            - { name: POSTGRES_PASSWORD, value: booking_svc_dev }
+            - { name: POSTGRES_DB, value: showpass_booking }
+          ports: [{ containerPort: 5432 }]
+          resources: { requests: { memory: "64Mi" }, limits: { memory: "256Mi" } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: postgres, namespace: showpass }
+spec:
+  selector: { app: postgres }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: redis, namespace: showpass }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: redis } }
+  template:
+    metadata: { labels: { app: redis } }
+    spec:
+      containers:
+        - name: redis
+          image: redis:8.6-alpine
+          # Senha bate com shared-secrets/redis-password do overlay staging
+          args: ["redis-server", "--requirepass", "redis_dev_secret"]
+          ports: [{ containerPort: 6379 }]
+          resources: { requests: { memory: "16Mi" }, limits: { memory: "64Mi" } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: redis, namespace: showpass }
+spec:
+  selector: { app: redis }
+  ports: [{ port: 6379, targetPort: 6379 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: kafka, namespace: showpass }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: kafka } }
+  template:
+    metadata: { labels: { app: kafka } }
+    spec:
+      containers:
+        - name: kafka
+          image: apache/kafka:4.2.0
+          env:
+            # KRaft single-node. Advertised listener = service DNS `kafka:9092`
+            # (resolve dentro do cluster — o booking pod conecta nele).
+            - { name: KAFKA_NODE_ID, value: "1" }
+            - { name: KAFKA_PROCESS_ROLES, value: "broker,controller" }
+            - { name: KAFKA_LISTENERS, value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093" }
+            - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT://kafka:9092" }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT" }
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@localhost:9093" }
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR, value: "1" }
+            - { name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS, value: "0" }
+          ports: [{ containerPort: 9092 }]
+          resources: { requests: { memory: "256Mi" }, limits: { memory: "768Mi" } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: kafka, namespace: showpass }
+spec:
+  selector: { app: kafka }
+  ports: [{ port: 9092, targetPort: 9092 }]

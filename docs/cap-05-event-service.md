@@ -20,7 +20,7 @@
   "name": "@showpass/event-service",
   "version": "0.0.1",
   "scripts": {
-    "dev": "node --watch --loader @swc-node/register/esm src/main.ts",
+    "dev": "node --watch --conditions=development --loader @swc-node/register/esm src/main.ts",
     "build": "tsc --project tsconfig.build.json",
     "start": "node dist/main.js",
     "test": "jest",

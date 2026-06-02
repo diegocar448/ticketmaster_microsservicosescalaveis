@@ -1,0 +1,10 @@
+# infra/terraform/.gitignore
+# Estado e artefatos locais do Terraform — NUNCA commitar (contêm segredos).
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+tfplan
+*.tfplan
+# tfvars com segredos (production.tfvars pode conter db_password)
+production.tfvars

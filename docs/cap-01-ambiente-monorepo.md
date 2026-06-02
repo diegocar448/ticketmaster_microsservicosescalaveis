@@ -542,7 +542,9 @@ FROM base AS deps
 # .npmrc + .pnpmfile.cjs PRECISAM estar presentes antes do install:
 # o lockfile grava `pnpmfileChecksum` quando há .pnpmfile.cjs no projeto.
 # Sem o arquivo, pnpm --frozen-lockfile aborta com ERR_PNPM_LOCKFILE_CONFIG_MISMATCH.
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc .pnpmfile.cjs ./
+# tsconfig.base.json é necessário no build (tsc herda da base) E no runtime dev
+# (swc-node lê a base) — sem ele o tsc falha com TS5083.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc .pnpmfile.cjs tsconfig.base.json ./
 COPY packages/ ./packages/
 # --frozen-lockfile garante reproducibilidade (sem surpresas no CI)
 RUN pnpm install --frozen-lockfile
@@ -557,23 +559,33 @@ CMD ["pnpm", "run", "dev"]
 FROM deps AS builder
 ARG SERVICE_NAME
 COPY apps/${SERVICE_NAME}/ ./apps/${SERVICE_NAME}/
+# Buildar os packages workspace → dist JS. Sem isso, `node dist/main.js` em prod
+# tenta carregar o .ts cru de node_modules → ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING.
+RUN pnpm --filter "@showpass/types" --filter "@showpass/redis" --filter "@showpass/kafka" run build
+# (Serviços Prisma) gerar o client (gitignored) e copiá-lo para dentro de dist
+# — o client é JS puro, excluído do tsc. Pular em api-gateway/search (sem Prisma).
+RUN pnpm --filter @showpass/${SERVICE_NAME} run db:generate
 RUN pnpm --filter @showpass/${SERVICE_NAME} run build
+RUN cp -r apps/${SERVICE_NAME}/src/prisma/generated apps/${SERVICE_NAME}/dist/prisma/generated
+# pnpm deploy: bundle prod com node_modules FLAT (resolve o store isolado do pnpm
+# — sem isso, deps como reflect-metadata não são achadas a partir de dist/main.js).
+RUN pnpm --filter @showpass/${SERVICE_NAME} --prod deploy /prod-app
 
 # ─── Stage: prod (imagem mínima — sem devDependencies, sem código fonte) ──────
 FROM node:22-alpine AS prod
-RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 WORKDIR /app
 
 ENV NODE_ENV=production
 
 ARG SERVICE_NAME
+COPY --from=builder /prod-app/node_modules ./node_modules
 COPY --from=builder /app/apps/${SERVICE_NAME}/dist ./dist
 COPY --from=builder /app/apps/${SERVICE_NAME}/package.json ./
-COPY --from=deps /app/node_modules ./node_modules
 
-# Usuário não-root — OWASP A05
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-USER appuser
+# Usuário não-root com UID NUMÉRICO 1001 (OWASP A05). O número (não só o nome)
+# permite ao K8s verificar runAsNonRoot — ver cap-16 (runAsUser: 1001).
+RUN addgroup -S -g 1001 appgroup && adduser -S -D -u 1001 -G appgroup appuser
+USER 1001
 
 EXPOSE 3000
 CMD ["node", "dist/main.js"]
@@ -846,7 +858,7 @@ module.exports = {
 
 > **Por que SWC e não tsx/esbuild?**  
 > NestJS usa `emitDecoratorMetadata` para injeção de dependências (DI). O `tsx` (baseado em esbuild) **não suporta** essa flag — os decorators são removidos em tempo de compilação e o NestJS cria instâncias com parâmetros `undefined`. O SWC suporta `decoratorMetadata: true` nativamente.  
-> O loader `@swc-node/register/esm` é usado no script `dev`: `node --watch --loader @swc-node/register/esm src/main.ts`.
+> O loader `@swc-node/register/esm` é usado no script `dev`: `node --watch --conditions=development --loader @swc-node/register/esm src/main.ts`. O `--conditions=development` faz o Node resolver os packages internos (`@showpass/types|redis|kafka`) para `src/` (TS) em vez de `dist/` — assim o dev não precisa buildar os packages (em prod, sem essa flag, resolve para `dist/`).
 
 ### `"type": "module"` em todos os `package.json` dos serviços
 

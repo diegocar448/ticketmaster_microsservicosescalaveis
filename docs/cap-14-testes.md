@@ -2,6 +2,92 @@
 
 > **Objetivo:** Estratégia de testes para um sistema distribuído — Jest (unit), Supertest (E2E por serviço), Playwright (E2E browser), e k6 (load test da reserva concorrente).
 
+## Passo 14.0 — Configuração do Jest (booking-service)
+
+Instale as dependências de teste no booking-service:
+
+```bash
+pnpm --filter @showpass/booking-service add -D \
+  jest ts-jest @types/jest supertest @types/supertest
+```
+
+O serviço tem `"type": "module"`, então os arquivos de config do Jest precisam
+ter extensão **`.cjs`** (CommonJS) — senão `module.exports` quebra com
+"module is not defined in ES module scope".
+
+```javascript
+// apps/booking-service/jest.config.cjs  (testes unitários — src/**/*.spec.ts)
+module.exports = {
+  displayName: '@showpass/booking-service',
+  preset: '../../jest.preset.js',
+  testEnvironment: 'node',
+  transform: {
+    '^.+\\.tsx?$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.spec.json', useESM: false }],
+  },
+  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],
+  testMatch: ['**/?(*.)+(spec).ts?(x)'],
+  // NodeNext usa imports com `.js` — mapear para `.ts` no jest
+  moduleNameMapper: { '^(\\.{1,2}/.*)\\.js$': '$1' },
+};
+```
+
+```javascript
+// apps/booking-service/jest.e2e.cjs  (testes E2E — test/e2e/**/*.e2e-spec.ts)
+require('dotenv').config({ path: __dirname + '/.env' }); // Redis/DATABASE do .env
+module.exports = {
+  displayName: '@showpass/booking-service (e2e)',
+  testEnvironment: 'node',
+  transform: {
+    '^.+\\.tsx?$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.spec.json', useESM: false }],
+  },
+  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],
+  testMatch: ['**/test/e2e/**/*.e2e-spec.ts'],
+  // moduleResolution node16 do tsconfig.spec não resolve o exports map dos
+  // packages workspace via jest → mapear @showpass/* para o src direto.
+  moduleNameMapper: {
+    '^(\\.{1,2}/.*)\\.js$': '$1',
+    '^@showpass/types/nest$': '<rootDir>/../../packages/types/src/decorators/current-user.decorator.ts',
+    '^@showpass/types$': '<rootDir>/../../packages/types/src/index.ts',
+    '^@showpass/redis$': '<rootDir>/../../packages/redis/src/index.ts',
+    '^@showpass/kafka$': '<rootDir>/../../packages/kafka/src/index.ts',
+  },
+  testTimeout: 30000,
+};
+```
+
+```json
+// apps/booking-service/tsconfig.spec.json
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "module": "CommonJS",
+    "moduleResolution": "node16",
+    "esModuleInterop": true
+  },
+  "include": ["src/**/*", "test/**/*"],
+  "exclude": ["node_modules", "dist", "prisma/generated"]
+}
+```
+
+Scripts no `package.json` (note `--forceExit` no e2e: o consumer Kafka mantém
+handles abertos e o Jest não sairia sozinho) e os `.spec.ts` **excluídos** do
+`tsconfig.json` e do `lint` do serviço (o ESLint type-aware acusaria falsos
+positivos `no-unsafe-*` nos mocks do Jest):
+
+```jsonc
+// apps/booking-service/package.json
+"scripts": {
+  "lint": "eslint src/ --ignore-pattern '**/*.spec.ts'",
+  "test": "jest --config jest.config.cjs",
+  "test:e2e": "jest --config jest.e2e.cjs --forceExit"
+}
+// tsconfig.json → "exclude": [..., "src/**/*.spec.ts"]
+```
+
+---
+
 ## Passo 14.1 — Testes Unitários: SeatLockService
 
 O teste unitário do `SeatLockService` é o mais puro: sem Docker, sem Redis real, sem banco.
@@ -25,7 +111,7 @@ import { RedisService } from '@showpass/redis';
 const mockRedis = {
   acquireLock: jest.fn(),
   releaseLock: jest.fn(),
-  get: jest.fn(),
+  getRaw: jest.fn(),
 };
 
 describe('SeatLockService', () => {
@@ -59,12 +145,13 @@ describe('SeatLockService', () => {
     });
 
     it('deve liberar locks adquiridos quando um falha (compensação all-or-nothing)', async () => {
-      // Primeiro adquire, segundo falha — o terceiro não deve nem ser tentado.
-      // PORQUÊ: manter consistência; um buyer não pode sair com lock parcial.
+      // A implementação tenta TODOS os assentos antes de compensar — vantagem:
+      // informa todos os indisponíveis numa única resposta (melhor UX). A
+      // compensação (releaseLock) ocorre ao final, sobre os que foram adquiridos.
       mockRedis.acquireLock
-        .mockResolvedValueOnce(true)   // seat-A: OK
-        .mockResolvedValueOnce(false)  // seat-B: FAIL
-        .mockResolvedValueOnce(true);  // seat-C: não deve ser chamado
+        .mockResolvedValueOnce(true)   // seat-A: OK — adquirido
+        .mockResolvedValueOnce(false)  // seat-B: FAIL — indisponível
+        .mockResolvedValueOnce(true);  // seat-C: OK — adquirido (mas será liberado)
 
       mockRedis.releaseLock.mockResolvedValue(true);
 
@@ -77,11 +164,18 @@ describe('SeatLockService', () => {
       expect(result.success).toBe(false);
       expect(result.unavailableSeatIds).toEqual(['seat-B']);
 
-      // seat-A foi adquirido antes da falha — deve ser liberado
+      // seat-A e seat-C foram adquiridos mas DEVEM ser liberados (compensação)
       expect(mockRedis.releaseLock).toHaveBeenCalledWith(
         expect.stringContaining('seat-A'),
         'buyer-456',
       );
+      expect(mockRedis.releaseLock).toHaveBeenCalledWith(
+        expect.stringContaining('seat-C'),
+        'buyer-456',
+      );
+
+      // Todos os 3 assentos foram tentados (sem fail-fast — coleta todos os falhos)
+      expect(mockRedis.acquireLock).toHaveBeenCalledTimes(3);
     });
 
     it('deve retornar todos os seatIds indisponíveis quando múltiplos falham', async () => {
@@ -217,9 +311,16 @@ Este é o teste que **prova** que o sistema resolve o problema central do ShowPa
 300.000 pessoas tentando o mesmo assento ao mesmo tempo. Apenas 1 deve vencer.
 
 > **ATENÇÃO — Redis real obrigatório:** ao contrário do Passo 14.1 (que mocka o Redis),
-> este teste sobe o `AppModule` completo com Redis e Postgres reais via `.env.test`.
-> O objetivo é testar a atomicidade do `SETNX` — isso só pode ser provado com Redis de verdade.
-> Rode `docker compose up -d` antes de executar este spec.
+> este teste sobe o `AppModule` completo com Redis e Postgres reais (lê o `.env` via
+> `dotenv` no `jest.e2e.cjs` do Passo 14.0). O objetivo é testar a atomicidade do
+> `SETNX` — isso só pode ser provado com Redis de verdade. Rode `docker compose up -d`
+> e garanta os tópicos Kafka (`bash scripts/kafka-topics.sh`) antes de executar.
+
+Três detalhes que fazem o teste rodar de verdade (descobertos na prática):
+
+1. **IDs precisam ser UUIDs válidos** — o schema do booking usa `@db.Uuid`; strings como `"concurrency-test-event-id"` quebram no insert.
+2. **`fetchEventData` faz HTTP ao event-service** — no `create` da reserva. Mockamos `global.fetch` (mais robusto que `jest.spyOn` num método privado) para devolver `status: 'on_sale'`.
+3. **Seed local** — o booking valida o lote (`ticketBatch`) e referencia `Event`/`Buyer` (réplicas locais). Sem seed, a reserva falha antes de chegar ao lock.
 
 ```typescript
 // apps/booking-service/test/e2e/concurrency.e2e-spec.ts
@@ -234,11 +335,18 @@ import request from 'supertest';  // default import — NodeNext/ESM
 import { AppModule } from '../../src/app.module.js';
 import { PrismaService } from '../../src/prisma/prisma.service.js';
 
+const TEST_EVENT_ID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+const TEST_BATCH_ID = 'b2c3d4e5-f6a7-8901-bcde-f12345678901';
+const TEST_ORG_ID = 'c3d4e5f6-a7b8-9012-cdef-123456789012';
+const TEST_BUYER_PREFIX = 'cccccccc-0000-4000-a000-';
+
+function buyerId(idx: number): string {
+  return `${TEST_BUYER_PREFIX}${String(idx).padStart(12, '0')}`;
+}
+
 describe('Concorrência: Double Booking Prevention', () => {
   let app: INestApplication;
   let prisma: PrismaService;
-  const testEventId = 'concurrency-test-event-id';
-  const testBatchId = 'concurrency-test-batch-id';
 
   beforeAll(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -248,51 +356,113 @@ describe('Concorrência: Double Booking Prevention', () => {
     app = module.createNestApplication();
     await app.init();
     prisma = app.get(PrismaService);
+
+    // Mockar global.fetch — fetchEventData (método privado) faz GET ao
+    // event-service. Mockar a fronteira HTTP é mais robusto que spyOn no privado.
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ status: 'on_sale', organizerId: TEST_ORG_ID }),
+    } as unknown as Response);
+
+    await seedTestData(prisma);
   });
 
   afterAll(async () => {
-    await prisma.reservation.deleteMany({ where: { eventId: testEventId } });
+    await cleanupTestData(prisma);
     await app.close();
   });
 
   it('deve permitir apenas 1 reserva quando 50 buyers tentam o mesmo assento', async () => {
-    const sharedSeatId = 'concurrency-test-seat-id';
-    const buyerIds = Array.from({ length: 50 }, (_, i) => `concurrent-buyer-${i}`);
+    const sharedSeatId = 'dddddddd-0000-4000-a000-000000000001';
+    const buyerCount = 50;
+    const buyerIds = Array.from({ length: buyerCount }, (_, i) => buyerId(i));
 
-    // Promise.allSettled garante que esperamos TODOS terminarem,
-    // mesmo que a maioria falhe com 409.
+    // Buyers replicados localmente (no fluxo real vêm do auth via Kafka)
+    await prisma.buyer.createMany({
+      data: buyerIds.map((id) => ({ id, email: `${id}@test.com` })),
+      skipDuplicates: true,
+    });
+
+    // Promise.allSettled aguarda TODOS terminarem, mesmo a maioria com 409.
     const results = await Promise.allSettled(
-      buyerIds.map((buyerId) =>
+      buyerIds.map((bId) =>
         request(app.getHttpServer())
           .post('/bookings/reservations')
-          .set('x-user-id', buyerId)
+          .set('x-user-id', bId)
           .set('x-user-type', 'buyer')
           .send({
-            eventId: testEventId,
-            items: [{ ticketBatchId: testBatchId, seatId: sharedSeatId, quantity: 1 }],
+            eventId: TEST_EVENT_ID,
+            items: [{ ticketBatchId: TEST_BATCH_ID, seatId: sharedSeatId, quantity: 1 }],
           }),
       ),
     );
 
     const successful = results.filter(
-      (r) => r.status === 'fulfilled' && r.value.status === 201,
+      (r) => r.status === 'fulfilled' &&
+        (r as PromiseFulfilledResult<{ status: number }>).value.status === 201,
     );
-    const failed = results.filter(
-      (r) => r.status === 'fulfilled' && r.value.status === 409,
+    const conflict = results.filter(
+      (r) => r.status === 'fulfilled' &&
+        (r as PromiseFulfilledResult<{ status: number }>).value.status === 409,
     );
 
-    // PORQUÊ exatamente 1: SETNX é atômico — apenas uma operação
-    // pode setar a chave quando ela não existe. As outras 49 recebem false.
+    // PORQUÊ exatamente 1: SETNX é atômico — só uma operação seta a chave
+    // quando ela não existe. As outras 49 recebem false → 409.
     expect(successful).toHaveLength(1);
-    expect(failed).toHaveLength(49);
+    expect(conflict).toHaveLength(buyerCount - 1);
 
     // Dupla verificação no banco: apenas 1 reserva 'pending' para o evento
-    const reservationsInDb = await prisma.reservation.count({
-      where: { eventId: testEventId, status: 'pending' },
+    const count = await prisma.reservation.count({
+      where: { eventId: TEST_EVENT_ID, status: 'pending' },
     });
-    expect(reservationsInDb).toBe(1);
-  }, 30_000);  // timeout de 30s — 50 requests simultâneas podem demorar
+    expect(count).toBe(1);
+  }, 30_000);  // 50 requests simultâneas podem demorar
 });
+
+async function seedTestData(prisma: PrismaService): Promise<void> {
+  await cleanupTestData(prisma);
+  await prisma.event.upsert({
+    where: { id: TEST_EVENT_ID },
+    create: {
+      id: TEST_EVENT_ID,
+      organizerId: TEST_ORG_ID,
+      title: 'Concurrency Test Event',
+      slug: `concurrency-test-${TEST_EVENT_ID}`,
+      status: 'on_sale',
+      startAt: new Date(Date.now() + 86_400_000),
+      endAt: new Date(Date.now() + 90_000_000),
+      venueCity: 'São Paulo',
+      venueState: 'SP',
+      thumbnailUrl: null,
+    },
+    update: {},
+  });
+  await prisma.ticketBatch.upsert({
+    where: { id: TEST_BATCH_ID },
+    create: {
+      id: TEST_BATCH_ID,
+      eventId: TEST_EVENT_ID,
+      name: 'Pista Concurrency',
+      price: 100,
+      totalQuantity: 100,
+      soldCount: 0,
+      reservedCount: 0,
+      isVisible: true,
+      saleStartAt: new Date(Date.now() - 3600_000),
+      saleEndAt: new Date(Date.now() + 3600_000),
+    },
+    update: {},
+  });
+}
+
+async function cleanupTestData(prisma: PrismaService): Promise<void> {
+  await prisma.reservationItem.deleteMany({
+    where: { reservation: { eventId: TEST_EVENT_ID } },
+  });
+  await prisma.reservation.deleteMany({ where: { eventId: TEST_EVENT_ID } });
+  await prisma.ticketBatch.deleteMany({ where: { eventId: TEST_EVENT_ID } });
+  await prisma.event.deleteMany({ where: { id: TEST_EVENT_ID } });
+}
 ```
 
 Se você ver `2 compradores adquiriram o lock` — há um bug de race condition.
@@ -494,8 +664,11 @@ PASS src/modules/locks/seat-lock.service.spec.ts
 
 > **Requer Docker rodando** (`docker compose up -d`) — Redis real é obrigatório para provar SETNX.
 
+O teste de concorrência é um **E2E** (sobe o `AppModule` completo), então roda
+pelo `test:e2e` (config `jest.e2e.cjs`), não pelo `test` unitário:
+
 ```bash
-pnpm --filter @showpass/booking-service run test -- --testPathPattern="concurrency"
+pnpm --filter @showpass/booking-service run test:e2e
 ```
 
 Este teste dispara 50 compradores simultâneos para o mesmo assento:

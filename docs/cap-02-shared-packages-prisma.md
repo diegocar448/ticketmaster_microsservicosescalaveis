@@ -41,11 +41,14 @@ packages/types/
   "exports": {
     ".": {
       "types": "./src/index.ts",
+      "development": "./src/index.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
     "./nest": {
       "types": "./src/decorators/current-user.decorator.ts",
+      "development": "./src/decorators/current-user.decorator.ts",
+      "require": "./dist/decorators/current-user.decorator.js",
       "import": "./dist/decorators/current-user.decorator.js",
       "default": "./dist/decorators/current-user.decorator.js"
     }
@@ -1199,7 +1202,9 @@ pnpm --filter @showpass/kafka run type-check
 pnpm --filter @showpass/redis run type-check
 ```
 
-Cada comando deve terminar sem erros. Os pacotes internos não têm step de `build` — o `main` do `package.json` aponta direto para `src/index.ts`, e cada serviço consumidor transpila via SWC.
+Cada comando deve terminar sem erros. Os pacotes internos têm um `build` (`tsc` → `dist/`) usado nas imagens de **produção** (`node dist/main.js` não consegue carregar `.ts` cru). Mas em **desenvolvimento** não é preciso buildar: o `exports` tem a condição `development` apontando para `src/index.ts`, e os serviços rodam com `node --conditions=development` — o SWC transpila o TS na hora. Em prod (sem essa condição), o `import`/`default` resolve para `dist/index.js`.
+
+> **Por que a condição `development`?** Sem ela, mudar `main` para `dist/index.js` (necessário para prod) quebraria o `pnpm dev` num clone limpo — o `node` tentaria carregar `dist/` que ainda não foi buildado. A condição mantém os dois fluxos: dev usa `src` (zero build), prod usa `dist`.
 
 **2. Validar schemas Zod no terminal**
 
