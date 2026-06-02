@@ -88,15 +88,16 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: booking-service-sa
-      # Não rodar como root (OWASP A05).
-      # A imagem (apps/booking-service/Dockerfile) cria o usuário `appuser` via
-      # `adduser -S` — UID atribuído pelo Alpine, NÃO 1000. Por isso NÃO
-      # fixamos runAsUser/fsGroup numéricos (causaria mismatch com o filesystem
-      # da imagem). `runAsNonRoot: true` já garante a invariante de segurança;
-      # o USER do Dockerfile é honrado. Para pinar UID, o Dockerfile teria que
-      # criar o usuário com `adduser -u 1000`.
+      # Não rodar como root (OWASP A05). PRECISA de runAsUser NUMÉRICO: o
+      # Dockerfile usa `USER 1001` e o K8s só consegue verificar `runAsNonRoot`
+      # quando o UID é numérico. Com `runAsNonRoot: true` sozinho (USER por nome),
+      # o pod falha com "container has runAsNonRoot and image will run as root".
+      # O app não escreve no filesystem (só stdout), então rodar com UID fixo é
+      # seguro. Ver apps/booking-service/Dockerfile (adduser -u 1001).
       securityContext:
         runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
       containers:
         - name: booking-service
           image: showpass-booking-service:latest  # sobrescrito pelo Kustomize
@@ -269,14 +270,36 @@ namespace: showpass
 resources:
   - ../../base
 
-# Em kind, as imagens são carregadas localmente (kind load docker-image),
-# então mantemos o nome local sem o registry ECR.
+# Em kind as imagens são locais (kind load docker-image), sem registry ECR.
 images:
   - name: showpass-booking-service
     newName: showpass-booking-service
     newTag: latest
+  - name: showpass-api-gateway
+    newName: showpass-api-gateway
+    newTag: latest
 
-# Staging: 1 réplica por serviço (economia de recursos no cluster local)
+# Secrets DEV-ONLY para o kind subir os pods. disableNameSuffixHash mantém os
+# nomes fixos (booking-service-secrets, shared-secrets) que os Deployments
+# referenciam. Em produção os Secrets vêm do External Secrets Operator
+# (infra/CLAUDE.md) — nunca hardcoded.
+generatorOptions:
+  disableNameSuffixHash: true
+
+secretGenerator:
+  - name: booking-service-secrets
+    namespace: showpass
+    literals:
+      - database-url=postgresql://booking_svc:booking_svc_dev@postgres:5432/showpass_booking
+  - name: shared-secrets
+    namespace: showpass
+    literals:
+      - redis-password=redis_dev_secret
+      - jwt-public-key=DEV_PLACEHOLDER_PUBLIC_KEY
+
+# Staging: 1 réplica por serviço + imagePullPolicy: IfNotPresent. Em kind a
+# imagem é CARREGADA localmente; com a tag `:latest` o default `Always` faria
+# o K8s tentar puxar de um registry inexistente → ImagePullBackOff.
 patches:
   - target:
       kind: Deployment
@@ -285,6 +308,19 @@ patches:
       - op: replace
         path: /spec/replicas
         value: 1
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+  - target:
+      kind: Deployment
+      name: api-gateway
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
 ```
 
 ---
@@ -448,6 +484,33 @@ chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
 kind create cluster --name showpass
 kubectl config use-context kind-showpass
 ```
+
+> **Pré-requisitos antes de aplicar o overlay** (descobertos testando de verdade
+> no kind — sem eles o pod fica `ImagePullBackOff` ou `CrashLoopBackOff`):
+>
+> ```bash
+> # 1) Imagem de PRODUÇÃO (não a dev — esta roda non-root, sem volume de código)
+> docker build --target prod -f apps/booking-service/Dockerfile \
+>   -t showpass-booking-service:latest .
+> kind load docker-image showpass-booking-service:latest --name showpass
+>
+> # 2) Postgres + Redis + Kafka no cluster — o booking (node dist/main.js) só
+> #    fica Ready quando alcança os três (Services postgres/redis/kafka). Em
+> #    produção vêm do Terraform (RDS/ElastiCache) + cluster Kafka.
+> kubectl apply -f infra/k8s/_dev-deps.yaml   # manifests de teste (dev-only)
+>
+> # 3) Pré-criar os tópicos Kafka — senão o consumer do booking falha com
+> #    "This server does not host this topic-partition" e entra em CrashLoop:
+> KPOD=$(kubectl get pod -n showpass -l app=kafka -o name | head -1)
+> kubectl exec "$KPOD" -n showpass -- /opt/kafka/bin/kafka-topics.sh \
+>   --bootstrap-server localhost:9092 --create --if-not-exists \
+>   --topic events.ticket-batch-created --partitions 1 --replication-factor 1
+> # (repetir para os demais tópicos de scripts/kafka-topics.sh)
+> ```
+>
+> O `infra/k8s/_dev-deps.yaml` é SÓ para o teste local no kind — Postgres/Redis/
+> Kafka single-replica com os mesmos nomes de Service e credenciais que o
+> `secretGenerator` do overlay staging espera. NÃO faz parte do deploy de produção.
 
 **2. Aplicar o overlay de staging**
 

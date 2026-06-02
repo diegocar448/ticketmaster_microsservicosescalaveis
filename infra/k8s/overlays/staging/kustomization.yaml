@@ -40,7 +40,10 @@ secretGenerator:
       - redis-password=redis_dev_secret
       - jwt-public-key=DEV_PLACEHOLDER_PUBLIC_KEY
 
-# Staging: 1 réplica por serviço (economia de recursos no cluster local).
+# Staging: 1 réplica por serviço (economia de recursos no cluster local) e
+# imagePullPolicy: IfNotPresent — em kind as imagens são CARREGADAS localmente
+# (kind load docker-image); com a tag `:latest` o default `Always` faria o K8s
+# tentar puxar de um registry inexistente → ImagePullBackOff.
 patches:
   - target:
       kind: Deployment
@@ -49,6 +52,9 @@ patches:
       - op: replace
         path: /spec/replicas
         value: 1
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
   - target:
       kind: Deployment
       name: api-gateway
@@ -56,3 +62,6 @@ patches:
       - op: replace
         path: /spec/replicas
         value: 1
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent

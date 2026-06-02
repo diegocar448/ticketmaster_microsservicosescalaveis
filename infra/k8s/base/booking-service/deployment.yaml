@@ -30,13 +30,17 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: booking-service-sa
-      # Não rodar como root (OWASP A05). A imagem (apps/booking-service/Dockerfile)
-      # cria o usuário `appuser` via adduser -S — UID atribuído pelo Alpine, NÃO
-      # 1000. Por isso NÃO fixamos runAsUser/fsGroup numéricos (causaria mismatch
-      # com o filesystem da imagem). runAsNonRoot já garante a invariante; o USER
-      # do Dockerfile é honrado. Para pinar UID, o Dockerfile criaria com adduser -u.
+      # Não rodar como root (OWASP A05). PRECISA de runAsUser NUMÉRICO: o
+      # Dockerfile usa `USER appuser` (nome, não número) e o K8s não consegue
+      # verificar que um username é não-root em tempo de admissão — `runAsNonRoot`
+      # sozinho falha com "container has runAsNonRoot and image will run as root".
+      # Fixar runAsUser: 1001 força um UID não-root verificável. O app não escreve
+      # no filesystem (só stdout), então rodar com UID arbitrário é seguro (mesmo
+      # padrão do OpenShift). Idealmente o Dockerfile também usa `adduser -u 1001`.
       securityContext:
         runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
       containers:
         - name: booking-service
           image: showpass-booking-service:latest # sobrescrito pelo Kustomize

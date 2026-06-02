@@ -2,9 +2,10 @@
   "name": "@showpass/kafka",
   "version": "0.0.1",
   "private": true,
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
   "types": "./src/index.ts",
   "scripts": {
+    "build": "tsc",
     "lint": "eslint src/",
     "type-check": "tsc --noEmit"
   },
@@ -24,5 +25,13 @@
     "@nestjs/common": "^11.0.0",
     "@nestjs/microservices": "^11.0.0"
   },
-  "type": "module"
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  }
 }
