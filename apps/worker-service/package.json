@@ -8,7 +8,6 @@
     "start": "node dist/main.js",
     "lint": "eslint src/",
     "type-check": "tsc --noEmit",
-    "test": "jest",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:prod": "prisma migrate deploy",
