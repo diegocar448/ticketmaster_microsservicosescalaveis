@@ -9,13 +9,54 @@
 > com `3003`, que é o event-service.
 >
 > **Pré-requisito — `/health/ready` no booking-service:** o `readinessProbe`
-> abaixo usa `/health/ready`. Hoje o booking-service só expõe `/health/live`.
-> Antes de aplicar este manifesto, adicione um `@Get('ready')` ao
-> `health.controller.ts` do booking-service que cheque dependências (Redis +
-> Postgres) — exatamente o padrão que o api-gateway já usa no seu
-> `/health/ready` agregado. `live` = "o processo está vivo"; `ready` = "consigo
-> atender tráfego" (deps OK). Sem essa distinção, o K8s manda tráfego para um
-> pod que ainda não conectou no Redis.
+> abaixo usa `/health/ready`. `live` = "o processo está vivo"; `ready` =
+> "consigo atender tráfego" (deps OK). Sem essa distinção, o K8s manda tráfego
+> para um pod que ainda não conectou no Redis. Adicione ao
+> `health.controller.ts` do booking-service:
+>
+> ```typescript
+> // apps/booking-service/src/modules/health/health.controller.ts
+> // (injeta RedisService — global — e PrismaService no construtor)
+>
+> @Get('ready')
+> async readiness(): Promise<{
+>   status: string;
+>   checks: { postgres: string; redis: string };
+> }> {
+>   try {
+>     // Timeout explícito: o ioredis ENFILEIRA comandos quando o servidor
+>     // está inacessível (em vez de falhar na hora). Sem o timeout, o
+>     // endpoint TRAVARIA segurando a conexão — readiness deve falhar RÁPIDO.
+>     await this.withTimeout(
+>       Promise.all([
+>         this.prisma.$queryRaw`SELECT 1`,
+>         this.redis.getRaw('health:ready'),
+>       ]),
+>       2_000,
+>     );
+>     return { status: 'ok', checks: { postgres: 'up', redis: 'up' } };
+>   } catch {
+>     throw new ServiceUnavailableException({
+>       status: 'error',
+>       message: 'Dependências indisponíveis',
+>     });
+>   }
+> }
+>
+> private withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+>   return Promise.race([
+>     promise,
+>     new Promise<never>((_, reject) =>
+>       setTimeout(() => { reject(new Error(`timeout ${String(ms)}ms`)); }, ms),
+>     ),
+>   ]);
+> }
+> ```
+>
+> Não usamos `@nestjs/terminus` aqui (como o api-gateway faz) — o booking-service
+> já injeta `RedisService` e `PrismaService`, então uma checagem direta é mais
+> leve e sem nova dependência. Lembre de adicionar `PrismaService` aos
+> `providers` do `HealthModule` (o `RedisService` é global via `RedisModule.forRoot`).
 
 ```yaml
 # infra/k8s/base/booking-service/deployment.yaml
@@ -48,7 +89,7 @@ spec:
     spec:
       serviceAccountName: booking-service-sa
       # Não rodar como root (OWASP A05).
-      # A imagem (infra/docker/nestjs.Dockerfile) cria o usuário `appuser` via
+      # A imagem (apps/booking-service/Dockerfile) cria o usuário `appuser` via
       # `adduser -S` — UID atribuído pelo Alpine, NÃO 1000. Por isso NÃO
       # fixamos runAsUser/fsGroup numéricos (causaria mismatch com o filesystem
       # da imagem). `runAsNonRoot: true` já garante a invariante de segurança;
@@ -71,11 +112,23 @@ spec:
                 secretKeyRef:
                   name: booking-service-secrets
                   key: database-url
-            - name: REDIS_URL
+            # O booking-service lê REDIS_HOST/REDIS_PORT/REDIS_PASSWORD separados
+            # (ver app.module.ts RedisModule.forRoot) — NÃO um único REDIS_URL.
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: redis-config
+                  key: host
+            - name: REDIS_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: redis-config
+                  key: port
+            - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: shared-secrets
-                  key: redis-url
+                  key: redis-password
             - name: KAFKA_BROKERS
               valueFrom:
                 configMapKeyRef:

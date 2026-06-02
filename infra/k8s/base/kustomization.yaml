@@ -1,0 +1,19 @@
+# infra/k8s/base/kustomization.yaml
+#
+# Base compartilhada por todos os ambientes. Os overlays (production/staging)
+# referenciam este diretório e sobrescrevem apenas o que muda por ambiente.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - config/configmaps.yaml
+  # booking-service (serviço crítico — exemplar do capítulo)
+  - booking-service/serviceaccount.yaml
+  - booking-service/deployment.yaml
+  - booking-service/service.yaml
+  - booking-service/hpa.yaml
+  # api-gateway (único exposto externamente; os outros 6 serviços seguem o
+  # mesmo padrão do booking-service)
+  - api-gateway/deployment.yaml
+  - api-gateway/service.yaml

@@ -1,0 +1,101 @@
+# infra/k8s/base/booking-service/deployment.yaml
+#
+# Porta do booking-service = 3004 (o Dockerfile faz EXPOSE 3004).
+# Não confundir com 3003 (event-service).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: booking-service
+  namespace: showpass
+  labels:
+    app: booking-service
+    version: "1.0"
+spec:
+  replicas: 3 # sobrescrito pelo HPA / overlays
+  selector:
+    matchLabels:
+      app: booking-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0 # zero downtime: sempre manter N pods disponíveis
+  template:
+    metadata:
+      labels:
+        app: booking-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3004"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: booking-service-sa
+      # Não rodar como root (OWASP A05). A imagem (apps/booking-service/Dockerfile)
+      # cria o usuário `appuser` via adduser -S — UID atribuído pelo Alpine, NÃO
+      # 1000. Por isso NÃO fixamos runAsUser/fsGroup numéricos (causaria mismatch
+      # com o filesystem da imagem). runAsNonRoot já garante a invariante; o USER
+      # do Dockerfile é honrado. Para pinar UID, o Dockerfile criaria com adduser -u.
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: booking-service
+          image: showpass-booking-service:latest # sobrescrito pelo Kustomize
+          ports:
+            - containerPort: 3004
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3004"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: booking-service-secrets
+                  key: database-url
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: redis-config
+                  key: host
+            - name: REDIS_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: redis-config
+                  key: port
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shared-secrets
+                  key: redis-password
+            - name: KAFKA_BROKERS
+              valueFrom:
+                configMapKeyRef:
+                  name: kafka-config
+                  key: brokers
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          # K8s verifica estes endpoints para decidir o estado do pod.
+          # /health/live e /health/ready implementados no health.controller.ts.
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 3004
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 3004
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          # Graceful shutdown: aguardar requests em andamento finalizarem
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sleep", "5"]
+      terminationGracePeriodSeconds: 30

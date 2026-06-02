@@ -1,0 +1,39 @@
+# infra/k8s/overlays/production/kustomization.yaml
+#
+# Produção: imagens do ECR (tag sobrescrita pelo CI com o SHA do commit),
+# mais réplicas, mais recursos. Secrets vêm do AWS Secrets Manager via
+# External Secrets Operator — NUNCA hardcoded aqui (ver infra/CLAUDE.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: showpass
+
+resources:
+  - ../../base
+
+# Sobrescrever imagens com o registry ECR. O job `deploy` do ci.yml (cap-15)
+# roda `kustomize edit set image showpass-<svc>=$ECR/...:$SHA` antes do apply.
+images:
+  - name: showpass-api-gateway
+    newName: 123456789.dkr.ecr.us-east-1.amazonaws.com/showpass-api-gateway
+    newTag: latest # sobrescrito pelo CI com o SHA do commit
+  - name: showpass-booking-service
+    newName: 123456789.dkr.ecr.us-east-1.amazonaws.com/showpass-booking-service
+    newTag: latest
+
+# Patches de produção: mais réplicas no booking, mais memória no gateway.
+patches:
+  - target:
+      kind: Deployment
+      name: booking-service
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 5
+  - target:
+      kind: Deployment
+      name: api-gateway
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "1Gi"

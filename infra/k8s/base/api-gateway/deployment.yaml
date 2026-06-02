@@ -1,0 +1,66 @@
+# infra/k8s/base/api-gateway/deployment.yaml
+#
+# O api-gateway é o único serviço exposto externamente (Ingress aponta aqui).
+# Porta 3000 (EXPOSE 3000 no Dockerfile). Os outros 6 serviços (auth, event,
+# payment, search, worker, web) seguem EXATAMENTE este padrão — omitidos aqui
+# para o capítulo focar no booking-service (o exemplar crítico).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: showpass
+  labels:
+    app: api-gateway
+    version: "1.0"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-gateway
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: api-gateway
+          image: showpass-api-gateway:latest # sobrescrito pelo Kustomize
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3000"
+            - name: JWT_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: shared-secrets
+                  key: jwt-public-key
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi" # sobrescrito para 1Gi no overlay de produção
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      terminationGracePeriodSeconds: 30

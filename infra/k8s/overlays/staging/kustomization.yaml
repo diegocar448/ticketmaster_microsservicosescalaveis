@@ -1,0 +1,58 @@
+# infra/k8s/overlays/staging/kustomization.yaml
+#
+# Staging — usado nos testes locais com kind. Mesmo base, 1 réplica por serviço,
+# imagens locais (carregadas via `kind load docker-image`, sem registry ECR).
+#
+# Os secretGenerator abaixo são PLACEHOLDERS DE DESENVOLVIMENTO só para o kind
+# subir os pods localmente. Em produção, os Secrets vêm do AWS Secrets Manager
+# via External Secrets Operator — nunca valores hardcoded (ver infra/CLAUDE.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: showpass
+
+resources:
+  - ../../base
+
+# Em kind as imagens são locais (kind load docker-image), então mantemos o nome
+# sem o registry ECR.
+images:
+  - name: showpass-booking-service
+    newName: showpass-booking-service
+    newTag: latest
+  - name: showpass-api-gateway
+    newName: showpass-api-gateway
+    newTag: latest
+
+# Secrets DEV-ONLY para o kind. disableNameSuffixHash mantém os nomes fixos
+# (booking-service-secrets, shared-secrets) que os Deployments referenciam.
+generatorOptions:
+  disableNameSuffixHash: true
+
+secretGenerator:
+  - name: booking-service-secrets
+    namespace: showpass
+    literals:
+      - database-url=postgresql://booking_svc:booking_svc_dev@postgres:5432/showpass_booking
+  - name: shared-secrets
+    namespace: showpass
+    literals:
+      - redis-password=redis_dev_secret
+      - jwt-public-key=DEV_PLACEHOLDER_PUBLIC_KEY
+
+# Staging: 1 réplica por serviço (economia de recursos no cluster local).
+patches:
+  - target:
+      kind: Deployment
+      name: booking-service
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: Deployment
+      name: api-gateway
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
