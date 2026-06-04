@@ -460,6 +460,51 @@ Para buyer:
 
 > **Pré-requisito:** booking-service rodando (Terminal 5 da [seção 3](#3-subir-o-stack-de-desenvolvimento)).
 
+### O que é observabilidade?
+
+**Observabilidade** = entender o que acontece no seu sistema através de três pilares:
+
+| Pilar | O quê | Sistema | Acesso |
+|---|---|---|---|
+| **Métricas** | "Como está agora?" (latência P95, requisições/s, conflitos) | Prometheus | http://localhost:9090 |
+| **Logs** | "O que aconteceu?" (eventos, erros, debug) | Loki | http://localhost:3100 |
+| **Traces** | "Por que demorou?" (árvore de operações, spans) | Tempo | http://localhost:3200 |
+
+**Exemplo:** POST /reservations (criar reserva)
+
+```
+Cliente              API Gateway          Booking Service      PostgreSQL
+   │                    │                       │                  │
+   ├──POST /─────────> │                       │                  │
+   │  {eventId, qty}   │ ├─ trace_id inicia   │                  │
+   │                   │ │  (a1b2c3d4...)     │                  │
+   │                   │ ├──POST /───────────>│                  │
+   │                   │                      ├─ valida          │
+   │                   │                      ├─ redis SETNX     │
+   │                   │                      ├──INSERT ────────>│
+   │                   │                      │                  ├─ 201 OK
+   │                   │                      │<─ INSERT OK ─────┤
+   │                   │<─ 201 Created ──────┤                  │
+   │<─ 201 OK ────────┤                       │                  │
+   │                   │                       ├─ emit Kafka      │
+   │                   │                       │  (traceId continua)
+   │                   │                       │
+```
+
+**O que é capturado:**
+
+- **Métricas:** showpass_reservations_total{status=success}, showpass_reservations_duration_milliseconds (P95=185ms), showpass_reservations_conflicts_total
+- **Logs:** "Reservation created in 245ms" (com trace_id=a1b2c3d4...)
+- **Traces:** árvore: POST (245ms) → validate (1ms) → redis.SETNX (3ms) → db.INSERT (40ms) → kafka.send (8ms)
+
+**A chave:** o `trace_id` une tudo. Uma métrica "P95 latência subiu" → abra o Loki com aquele trace_id → veja exatamente qual operação travou (db.INSERT demorou 150ms?).
+
+**Correlação em tempo real no Grafana:** clique num ponto do gráfico → abre o Tempo mostrando os traces daquele momento.
+
+Para detalhes completos, ver [docs/cap-17-observabilidade.md — "Como funciona a observabilidade"](../cap-17-observabilidade.md#como-funciona-a-observabilidade-fluxo-end-to-end).
+
+### 12.1 Subir a stack de observabilidade
+
 ### 12.1 Subir a stack de observabilidade
 
 ```bash

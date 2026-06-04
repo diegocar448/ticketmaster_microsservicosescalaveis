@@ -644,6 +644,316 @@ O JSON precisa ser **puro** (sem comentários `//`) e cada painel precisa de `gr
 
 ---
 
+## Como funciona a observabilidade (fluxo end-to-end)
+
+Para entender como Prometheus, Loki e Tempo trabalham juntos, vamos rastrear uma requisição real: **criar uma reserva** (`POST /reservations`).
+
+### 🔄 Fluxo da Requisição
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ 1. CLIENTE FAZ REQUEST HTTP                                         │
+│    curl -X POST http://localhost:3001/checkout/confirm \            │
+│      -H "Authorization: Bearer $token" \                            │
+│      -d '{"eventId":"...", "items":[...]}'                          │
+└────────────────────┬────────────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ 2. API GATEWAY (3000) — Porta de Entrada                            │
+│    • Middleware JwtAuthMiddleware valida Bearer token              │
+│    • Injeta headers internos: x-user-id, x-user-type, x-organizer-id
+│    • OpenTelemetry inicia um SPAN raiz (@telemetry/nest.ts)       │
+│      trace_id = random UUID (ex: a1b2c3d4e5f6g7h8)                │
+│      span_id = correlaciona com toda a request                    │
+│    • Proxia para booking-service:3004/reservations                │
+└────────────────────┬────────────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ 3. BOOKING-SERVICE (3004) — Processamento da Reserva               │
+│                                                                     │
+│    POST /reservations — ReservationController.create()             │
+│    • Child SPAN: "create_reservation"                              │
+│    • Atributos: userId, eventId, quantity, timestamp               │
+│                                                                     │
+│    ① Valida entrada (Zod schema)                                   │
+│      → Métrica: showpass_reservations_total (label: status=valid)  │
+│                                                                     │
+│    ② SeatLockService.acquireLocks() — Redis SETNX (atômico)       │
+│      → Child SPAN: "acquire_locks"                                 │
+│      → Atributos: seats_requested, lock_ttl                        │
+│      → Métrica: showpass_locks_acquired (gauge)                    │
+│                                                                     │
+│    ③ BookingService.createReservation()                           │
+│      → Calcula preço, gera ID                                      │
+│      → Child SPAN: "calculate_price"                               │
+│      → Métrica: showpass_reservations_duration_milliseconds        │
+│        (histograma: P50, P95, P99)                                 │
+│                                                                     │
+│    ④ DATABASE (PostgreSQL) — INSERT na tabela Reservation         │
+│      → Child SPAN: "db.statement"                                  │
+│      → Query: INSERT INTO reservations (id, userId, eventId, ...) │
+│      → Atributos: rows_affected, db.system=postgresql             │
+│      → Métrica: showpass_db_queries_duration_ms                    │
+│                                                                     │
+│    Sucesso ✅ ou erro ❌ ?                                         │
+│      if erro (duplicate seat, low stock):                          │
+│        → Métrica: showpass_reservations_conflicts_total++          │
+│        → Log ERROR: "Conflito de assento" (traceId=...)            │
+│                                                                     │
+└────────────────────┬────────────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ 4. PUBLICAR EVENTO NO KAFKA (Broker na porta 9092)                 │
+│                                                                     │
+│    Se sucesso → emit ReservationCreatedEvent:                      │
+│    {                                                               │
+│      reservationId: "uuid",                                        │
+│      eventId: "uuid",                                              │
+│      traceId: "a1b2c3d4e5f6g7h8",  ← CORRELAÇÃO CRÍTICA           │
+│      timestamp: "2026-06-04T..."                                   │
+│    }                                                               │
+│                                                                     │
+│    Topic: showpass.reservations.created                            │
+│    Partição: hash(eventId) % 3  (load balancing)                   │
+│    • Child SPAN: "kafka.send"                                      │
+│    • Atributos: topic, partition, offset                           │
+│    • Métrica: showpass_kafka_messages_sent_total                   │
+│                                                                     │
+└────────────────────┬────────────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ 5. RESPOSTA HTTP RETORNA AO CLIENTE                                │
+│                                                                     │
+│    Status: 201 Created                                             │
+│    Body: { reservationId, total, status: "confirmed" }             │
+│    Header: X-Trace-ID: "a1b2c3d4e5f6g7h8" (para debug)             │
+│                                                                     │
+│    Time elapsed: 245ms (capturado em showpass_reservations_duration│
+│                                                                     │
+└────────────────────┬────────────────────────────────────────────────┘
+                     │
+                     ▼ (async — não bloqueia o client)
+┌─────────────────────────────────────────────────────────────────────┐
+│ 6. WORKER-SERVICE (3007) — Consome o Evento                        │
+│                                                                     │
+│    Kafka Consumer escuta showpass.reservations.created              │
+│    • Child SPAN: "kafka.receive"                                   │
+│    • Herda o TRACE ID do evento (mesma trace: a1b2c3d4e5f6g7h8)   │
+│    • Child SPAN: "send_confirmation_email"                         │
+│    • Atributos: recipient, email_template                          │
+│    • Métrica: showpass_emails_sent_total                           │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 📊 Os 3 Pilares: Onde vão os dados
+
+Tudo que aconteceu acima gera **3 tipos de dados**:
+
+#### 1️⃣ **Métricas (Prometheus — séries temporais)**
+
+```promql
+# Histograma de latência: quantas requisições em cada bucket
+showpass_reservations_duration_milliseconds_bucket{
+  le="50",
+  eventId="event-uuid",
+  status="success"
+} 3421   ← 3421 requisições responderam em <50ms
+
+showpass_reservations_duration_milliseconds_bucket{
+  le="200",
+  eventId="event-uuid",
+  status="success"
+} 8523   ← 8523 requisições responderam em <200ms
+
+# Contador: quantas reservas foram criadas
+showpass_reservations_total{
+  eventId="event-uuid",
+  status="success"
+} 10452
+
+# Conflitos detectados (double-booking)
+showpass_reservations_conflicts_total{
+  eventId="event-uuid",
+  reason="seat_unavailable"
+} 127
+```
+
+**Acesso:** `http://localhost:9090` (Prometheus UI)
+
+**Exemplo de query — P95 de latência do último 1h:**
+```promql
+histogram_quantile(0.95, rate(showpass_reservations_duration_milliseconds_bucket[1h]))
+# Resultado: 185ms
+```
+
+#### 2️⃣ **Logs (Loki — texto estruturado + busca por trace)**
+
+Cada evento gera logs em JSON:
+
+```json
+{
+  "timestamp": "2026-06-04T15:30:45.123Z",
+  "level": "INFO",
+  "service_name": "booking-service",
+  "trace_id": "a1b2c3d4e5f6g7h8",
+  "span_id": "x1y2z3a4",
+  "message": "Reservation created successfully",
+  "userId": "user-uuid",
+  "eventId": "event-uuid",
+  "reservationId": "reservation-uuid",
+  "duration_ms": 245
+}
+
+{
+  "timestamp": "2026-06-04T15:30:46.001Z",
+  "level": "ERROR",
+  "service_name": "booking-service",
+  "trace_id": "a1b2c3d4e5f6g7h8",
+  "span_id": "y9z8a7b6",
+  "message": "Seat lock conflict detected",
+  "seatIds": ["seat-123", "seat-124"],
+  "reason": "SETNX returned 0"
+}
+```
+
+**Acesso:** `http://localhost:3100` (Loki UI)
+
+**Exemplo de query — todos os erros dessa requisição:**
+```logql
+{trace_id="a1b2c3d4e5f6g7h8"} | json | level="ERROR"
+```
+
+#### 3️⃣ **Traces Distribuídos (Tempo — árvore de spans)**
+
+Uma **única requisição** gera uma árvore de spans conectados:
+
+```
+Trace ID: a1b2c3d4e5f6g7h8 (total: 245ms)
+├─ Span: "POST /reservations" (245ms)
+│  ├─ Span: "JwtAuthMiddleware" (2ms)
+│  ├─ Span: "acquire_locks" (15ms)
+│  │  ├─ Span: "redis.call SETNX" (3ms)
+│  │  └─ Span: "redis.call SETNX" (2ms)
+│  ├─ Span: "calculate_price" (5ms)
+│  ├─ Span: "db.insert" (45ms)
+│  │  └─ Span: "pg.query INSERT INTO reservations" (40ms)
+│  ├─ Span: "kafka.send" (8ms)
+│  │  └─ Span: "broker.acknowledge" (5ms)
+│  └─ Span: "response.serialize" (3ms)
+│
+└─ Span: "kafka.receive" (142ms depois)
+   └─ Span: "send_confirmation_email" (850ms, async)
+```
+
+**Acesso:** `http://localhost:3200` (Tempo UI) ou `http://localhost:3002` (Grafana Explorer)
+
+Você clica num span e vê:
+- ⏱️ Duração exata de cada operação
+- 📝 Atributos (userId, eventId, status)
+- 📋 Logs que aconteceram naquele span
+- ❌ Erros/exceções
+
+### 🔗 A Chave Mágica: traceId
+
+O **`traceId`** une TUDO (métrica + log + trace):
+
+```javascript
+// Request HTTP inicia
+GET /checkout → middleware JwtAuthMiddleware
+  ↓
+  // cria traceId = "a1b2c3d4e5f6g7h8"
+
+// Passa pelo OpenTelemetry
+POST /reservations (booking-service)
+  Header: traceparent: "00-a1b2c3d4e5f6g7h8-..."
+  ↓
+  // Booking-service lê o header
+  // Todos os logs têm trace_id="a1b2c3d4e5f6g7h8"
+  // Todos os spans têm trace_id="a1b2c3d4e5f6g7h8"
+  // Todas as métricas são etiquetadas com trace_id (opcional, mas útil)
+
+// Publica no Kafka
+Topic: showpass.reservations.created
+  Message: {
+    traceId: "a1b2c3d4e5f6g7h8",  ← continua o mesmo!
+    ...
+  }
+
+// Worker-service consome
+  Logs de worker: trace_id="a1b2c3d4e5f6g7h8"
+  Métricas de email: trace_id="a1b2c3d4e5f6g7h8"
+```
+
+### 🎯 Caso de Uso: Debug de Problema
+
+**Situação:** "Reservas são criadas, mas emails não chegam"
+
+```bash
+# 1. Encontrar a anomalia nas métricas
+Prometheus:
+  showpass_reservations_total{status="success"} = 1000  ✅
+  showpass_emails_sent_total = 876                      ❌ caiu!
+
+# 2. Buscar logs de erro
+Loki query:
+  {service_name="worker-service"} | json | level="ERROR"
+
+Encontrou:
+  {
+    trace_id: "a1b2c3d4e5f6g7h8",
+    message: "SMTP connection timeout",
+    timestamp: "2026-06-04T15:30:47.001Z"
+  }
+
+# 3. Abrir o trace completo no Tempo
+Tempo: Buscar trace a1b2c3d4e5f6g7h8
+
+Vê a árvore:
+  ├─ Reservation criada ✅ (201ms)
+  ├─ Kafka event publicado ✅ (8ms)
+  └─ Email envio ❌ (timeout após 30s)
+     └─ Log: "SMTP timeout"
+
+# 4. Correlação
+A métrica, log e trace apontam pro mesmo problema
+→ Servidor SMTP está lento
+
+# 5. Alerta automático
+Grafana Rule:
+  IF rate(showpass_emails_sent_total) DROP > 10%
+  THEN send alert to #ops-showpass Slack
+```
+
+### 📈 Dashboard Grafana
+
+O dashboard **"Seat Availability — Real Time"** (`http://localhost:3002`) mostra:
+
+```
+┌─────────────────────────────────────┐
+│ Reservas/s (últimos 5 min)          │  45.3 req/s      ↗
+├─────────────────────────────────────┤
+│ Latência P95                        │  185ms           ↗
+├─────────────────────────────────────┤
+│ Conflitos (últimos 5 min)           │  3 conflitos     →
+├─────────────────────────────────────┤
+│ Gráfico: Latência em tempo real     │
+│                                 ╱   │
+│                             ╱       │
+│                         ╱           │
+│                     ╱               │
+│                 ╱                   │
+└─────────────────────────────────────┘
+```
+
+Clique num ponto do gráfico → abre o **Tempo** com os traces daquele exato momento.
+
+---
+
 ## Testando na prática
 
 > **Guia completo:** ver [docs/guia-de-testes.md — Fluxo 9](guia-de-testes.md#12-fluxo-9--observabilidade-métricas--traces--logs).
