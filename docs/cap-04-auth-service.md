@@ -1117,9 +1117,16 @@ Adicionar ao `apps/auth-service/package.json`:
    ├── Revogar token atual (rotation)
    └── Emitir novo par de tokens
 
-4. Logout (POST /auth/logout)
+4. Logout
+   ├── Organizer: POST /auth/logout
+   ├── Buyer:     POST /auth/buyers/logout
    ├── Revogar refresh token no banco
-   └── Limpar cookie
+   └── Limpar cookie httpOnly
+   
+   Nota: o frontend envia `Authorization: Bearer <token>` no header.
+   O gateway injeta x-user-id/x-user-type; o guard valida o tipo antes de revogar.
+   Buyer e organizer têm endpoints separados porque usam guards diferentes
+   (BuyerGuard vs OrganizerGuard), garantindo que um não possa encerrar a sessão do outro.
 ```
 
 ---
