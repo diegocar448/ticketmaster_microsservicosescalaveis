@@ -14,58 +14,150 @@ Traces → "Por que demorou?" (Tempo/Jaeger via OpenTelemetry)
 
 ## Passo 17.1 — OpenTelemetry no NestJS
 
+Primeiro as dependências (`apps/booking-service/package.json`):
+
+```bash
+pnpm --filter @showpass/booking-service add \
+  @opentelemetry/api \
+  @opentelemetry/api-logs \
+  @opentelemetry/sdk-node \
+  @opentelemetry/sdk-metrics \
+  @opentelemetry/sdk-logs \
+  @opentelemetry/exporter-trace-otlp-http \
+  @opentelemetry/exporter-metrics-otlp-http \
+  @opentelemetry/exporter-logs-otlp-http \
+  @opentelemetry/auto-instrumentations-node
+```
+
+> ⚠️ **API atual (SDK 0.2xx):** `new Resource({...})` e os `SEMRESATTRS_*` de
+> `@opentelemetry/semantic-conventions` **foram removidos**. Não precisamos deles: o
+> `NodeSDK` tem um `envDetector` que lê `OTEL_SERVICE_NAME` do `.env` e popula o
+> resource sozinho. Por isso o arquivo abaixo não importa `Resource`.
+
 ```typescript
 // apps/booking-service/src/instrumentation.ts
 //
-// Deve ser o PRIMEIRO arquivo carregado — antes do NestJS iniciar.
-// Configurar assim no package.json: "dev": "node -r ./src/instrumentation.js ..."
-// Ou com tsx: "tsx --require ./src/instrumentation.ts src/main.ts"
+// Carregado ANTES do NestJS — em main.ts é o 1º import (após dotenv, para que
+// OTEL_* já estejam no process.env). A auto-instrumentação patcheia http/redis/
+// kafka no momento do import, então o SDK precisa iniciar antes de tudo.
 
+import type { IncomingMessage } from 'node:http';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
+import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http';
 import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
+import { BatchLogRecordProcessor } from '@opentelemetry/sdk-logs';
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
-import { Resource } from '@opentelemetry/resources';
-import { SEMRESATTRS_SERVICE_NAME, SEMRESATTRS_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
+
+const endpoint =
+  process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] ?? 'http://localhost:4318';
 
 const sdk = new NodeSDK({
-  resource: new Resource({
-    [SEMRESATTRS_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME ?? 'booking-service',
-    [SEMRESATTRS_SERVICE_VERSION]: process.env.npm_package_version ?? '1.0.0',
-  }),
+  // service.name vem de OTEL_SERVICE_NAME (.env) via envDetector.
+  traceExporter: new OTLPTraceExporter({ url: `${endpoint}/v1/traces` }),
 
-  // Exportar traces para o OpenTelemetry Collector (que repassa para Tempo)
-  traceExporter: new OTLPTraceExporter({
-    url: `${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces`,
-  }),
-
-  // Exportar métricas para o Prometheus via OTEL Collector
+  // Métricas exportadas a cada 15s para o Collector (exporter prometheus :8889).
   metricReader: new PeriodicExportingMetricReader({
-    exporter: new OTLPMetricExporter({
-      url: `${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/metrics`,
-    }),
-    exportIntervalMillis: 15_000,  // exportar a cada 15s
+    exporter: new OTLPMetricExporter({ url: `${endpoint}/v1/metrics` }),
+    exportIntervalMillis: 15_000,
   }),
 
-  // Auto-instrumentação: HTTP, Express, Prisma, ioredis, Kafka — zero código adicional
+  // Logs → Collector → Loki. Registra o LoggerProvider global que o OtelLogger usa.
+  logRecordProcessors: [
+    new BatchLogRecordProcessor(
+      new OTLPLogExporter({ url: `${endpoint}/v1/logs` }),
+    ),
+  ],
+
+  // Auto-instrumentação: HTTP, Express, Prisma, ioredis, Kafka — zero código extra.
   instrumentations: [
     getNodeAutoInstrumentations({
       '@opentelemetry/instrumentation-http': {
-        // Não instrumentar health checks (muito volume, pouco valor)
-        ignoreIncomingRequestHook: (req) =>
+        // Health checks: muito volume, pouco valor — não instrumentar.
+        ignoreIncomingRequestHook: (req: IncomingMessage) =>
           req.url?.startsWith('/health') ?? false,
       },
+      '@opentelemetry/instrumentation-fs': { enabled: false }, // ruído demais
     }),
   ],
 });
 
 sdk.start();
 
-// Garantir que o SDK seja encerrado corretamente ao parar o processo
 process.on('SIGTERM', () => {
-  sdk.shutdown().finally(() => process.exit(0));
+  void sdk.shutdown().finally(() => process.exit(0));
 });
+```
+
+**Carregar a instrumentação** — no topo de `apps/booking-service/src/main.ts`, logo
+após o dotenv e antes de qualquer import do Nest:
+
+```typescript
+import 'dotenv/config';
+// DEPOIS do dotenv (precisa de OTEL_* no env), ANTES de @nestjs/core e http.
+import './instrumentation.js';
+import 'reflect-metadata';
+import { NestFactory } from '@nestjs/core';
+// ...
+```
+
+> Em ESM a ordem dos `import` é a ordem de avaliação: `dotenv/config` popula o env,
+> `./instrumentation.js` sobe o SDK, e só então o Nest é carregado já instrumentado.
+
+### Logs: ponte do Logger do Nest → Loki
+
+A `instrumentation.ts` só registra o *LoggerProvider*. Para os logs da aplicação
+chegarem ao Loki, trocamos o logger do Nest por um que também emite via OTLP. Sem
+isso o painel de Loki fica vazio — o Loki sobe, mas ninguém envia log.
+
+```typescript
+// apps/booking-service/src/common/logging/otel-logger.service.ts
+import { ConsoleLogger } from '@nestjs/common';
+import { logs, SeverityNumber } from '@opentelemetry/api-logs';
+
+const otelLogger = logs.getLogger('booking-service');
+
+// Estende ConsoleLogger: mantém o output legível no terminal E emite OTLP→Loki.
+export class OtelLogger extends ConsoleLogger {
+  override log(message: unknown, ...rest: unknown[]): void {
+    super.log(message, ...rest);
+    this.emit(SeverityNumber.INFO, 'INFO', message, rest);
+  }
+  override error(message: unknown, ...rest: unknown[]): void {
+    super.error(message, ...rest);
+    this.emit(SeverityNumber.ERROR, 'ERROR', message, rest);
+  }
+  override warn(message: unknown, ...rest: unknown[]): void {
+    super.warn(message, ...rest);
+    this.emit(SeverityNumber.WARN, 'WARN', message, rest);
+  }
+  // ...debug/verbose idem...
+
+  private emit(
+    severityNumber: SeverityNumber,
+    severityText: string,
+    message: unknown,
+    rest: unknown[],
+  ): void {
+    const last = rest.at(-1);
+    const context = typeof last === 'string' ? last : this.context;
+    const body = typeof message === 'string' ? message : JSON.stringify(message);
+    otelLogger.emit({
+      severityNumber,
+      severityText,
+      body,
+      attributes: context ? { context } : {},
+    });
+  }
+}
+```
+
+E ativá-lo no `main.ts` (após o `NestFactory.create`):
+
+```typescript
+const app = await NestFactory.create(AppModule, { bufferLogs: true });
+app.useLogger(new OtelLogger()); // console + OTLP→Loki; bufferLogs pega o bootstrap
 ```
 
 ---
@@ -79,14 +171,15 @@ process.on('SIGTERM', () => {
 // "Quantas reservas por segundo" é mais acionável que "CPU 60%".
 
 import { Injectable, OnModuleInit } from '@nestjs/common';
-import { metrics } from '@opentelemetry/api';
+import { metrics, type Counter, type Histogram } from '@opentelemetry/api';
 
 @Injectable()
 export class BusinessMetricsService implements OnModuleInit {
-  private reservationsCounter!: ReturnType<typeof metrics.getMeter>['createCounter'];
-  private reservationConflictsCounter!: ReturnType<typeof metrics.getMeter>['createCounter'];
-  private reservationDurationHistogram!: ReturnType<typeof metrics.getMeter>['createHistogram'];
-  private activeLockGauge!: ReturnType<typeof metrics.getMeter>['createObservableGauge'];
+  // Tipos nomeados do @opentelemetry/api — `Counter`/`Histogram` são o retorno
+  // de createCounter/createHistogram (instâncias, não os métodos).
+  private reservationsCounter!: Counter;
+  private reservationConflictsCounter!: Counter;
+  private reservationDurationHistogram!: Histogram;
 
   onModuleInit(): void {
     const meter = metrics.getMeter('booking-service');
@@ -131,14 +224,65 @@ export class BusinessMetricsService implements OnModuleInit {
 }
 ```
 
+### Registrar como módulo global
+
+```typescript
+// apps/booking-service/src/common/metrics/metrics.module.ts
+import { Global, Module } from '@nestjs/common';
+import { BusinessMetricsService } from './business-metrics.service.js';
+
+@Global() // injetável em qualquer módulo sem reimportar — igual a Redis/Kafka
+@Module({
+  providers: [BusinessMetricsService],
+  exports: [BusinessMetricsService],
+})
+export class MetricsModule {}
+```
+
+E importar no `AppModule` (`imports: [..., MetricsModule, ReservationsModule]`).
+
+### Instrumentar o fluxo de reserva
+
+As métricas só têm valor se forem **chamadas** no caminho crítico. No
+`ReservationsService.create()`, injete `BusinessMetricsService` e:
+
+```typescript
+async create(buyerId: string, dto: CreateReservationDto) {
+  const startedAt = Date.now();
+  let success = false;
+  try {
+    // ...
+    if (!lockResult.success) {
+      // conflito de lock = tentativa de double booking → alimenta o alerta
+      this.metrics.recordReservationConflict(dto.eventId, lockResult.unavailableSeatIds.length);
+      throw new ConflictException({ /* ... */ });
+    }
+    // ... persistir + emitir Kafka ...
+    this.metrics.recordReservationCreated(dto.eventId);
+    success = true;
+    return reservation;
+  } finally {
+    // registra latência em TODO caminho; label success separa as curvas no Grafana
+    this.metrics.recordReservationDuration(Date.now() - startedAt, success);
+  }
+}
+```
+
+> O `finally` garante que sucesso, conflito **e** erro entrem no histograma de
+> latência — sem ele, o P95 só mediria o caminho feliz.
+
 ---
 
 ## Passo 17.3 — Docker Compose: Stack de Observabilidade
 
+Toda a stack fica atrás do profile `observability` — só sobe com `--profile observability`,
+mantendo o `docker compose up` do dia a dia leve.
+
 ```yaml
-# Adicionar ao docker-compose.yml
+# Adicionar ao docker-compose.yml — todos com profiles: ["observability"]
 
 otel-collector:
+  profiles: ["observability"]
   image: otel/opentelemetry-collector-contrib:0.120.0
   command: ["--config=/etc/otel-collector-config.yaml"]
   volumes:
@@ -146,10 +290,11 @@ otel-collector:
   ports:
     - "4318:4318"  # OTLP HTTP
   networks:
-    - private
-    - data
+    - private        # recebe OTLP dos serviços em container
+    - observability  # exporta p/ tempo, expõe :8889 ao prometheus, publica 4318 ao host
 
 prometheus:
+  profiles: ["observability"]
   image: prom/prometheus:v3.1.0
   command:
     - '--config.file=/etc/prometheus/prometheus.yml'
@@ -160,9 +305,10 @@ prometheus:
   ports:
     - "9090:9090"
   networks:
-    - data
+    - observability
 
 grafana:
+  profiles: ["observability"]
   image: grafana/grafana:11.4.0
   environment:
     GF_SECURITY_ADMIN_PASSWORD: admin
@@ -174,9 +320,10 @@ grafana:
   ports:
     - "3002:3000"  # http://localhost:3002
   networks:
-    - data
+    - observability
 
 loki:
+  profiles: ["observability"]
   image: grafana/loki:3.3.2
   command: -config.file=/etc/loki/config.yaml
   volumes:
@@ -185,116 +332,311 @@ loki:
   ports:
     - "3100:3100"
   networks:
-    - data
+    - observability
 
 tempo:
+  profiles: ["observability"]
   image: grafana/tempo:2.7.1
   command: ["-config.file=/etc/tempo/config.yaml"]
   volumes:
     - ./infra/tempo/config.yaml:/etc/tempo/config.yaml
-    - tempo_data:/tmp/tempo
+    # /var/tempo já existe na imagem com dono uid 10001; um named volume herda essa
+    # permissão. Montar em /tmp/tempo daria "mkdir: permission denied" (volume root).
+    - tempo_data:/var/tempo
   ports:
     - "3200:3200"  # query API
     - "4317:4317"  # OTLP gRPC
   networks:
-    - data
+    - observability
+```
+
+> ⚠️ **Rede `observability` NÃO pode ser `internal: true`.** Em rede só-interna o Docker
+> aceita o `ports:` mas nunca ativa o bind — `localhost:3002` responde `Connection refused`.
+> Por isso esses serviços ficam numa rede com saída externa (diferente de `data`, que é interna):
+
+```yaml
+# networks: (topo do docker-compose.yml)
+networks:
+  # ... public, private, data (internal: true) ...
+  observability:
+    # SEM internal: o dev acessa Grafana/Prometheus/etc. pelo host.
+
+# volumes:
+volumes:
+  # ... postgres_data, etc. ...
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  tempo_data:
+```
+
+### Arquivos de configuração
+
+Cada serviço lê um arquivo de config montado por bind. **Crie-os antes de subir** — se o
+caminho não existir, o Docker cria um *diretório* vazio no lugar e o mount falha com
+`not a directory`.
+
+```yaml
+# infra/otel/collector-config.yaml — recebe OTLP e distribui:
+#   traces→Tempo · métricas→Prometheus · logs→Loki
+receivers:
+  otlp:
+    protocols:
+      http: { endpoint: 0.0.0.0:4318 }   # serviços enviam OTLP/HTTP aqui
+      grpc: { endpoint: 0.0.0.0:4319 }   # 4317 é do Tempo no host
+processors:
+  batch: {}
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls: { insecure: true }
+  prometheus:
+    endpoint: 0.0.0.0:8889             # Prometheus raspa aqui (job otel-collector)
+  otlphttp/loki:                       # Loki 3.x: endpoint OTLP nativo (/otlp/v1/logs)
+    endpoint: http://loki:3100/otlp
+    tls: { insecure: true }
+  debug: { verbosity: basic }
+service:
+  pipelines:
+    traces:  { receivers: [otlp], processors: [batch], exporters: [otlp/tempo, debug] }
+    metrics: { receivers: [otlp], processors: [batch], exporters: [prometheus] }
+    logs:    { receivers: [otlp], processors: [batch], exporters: [otlphttp/loki, debug] }
+```
+
+```yaml
+# infra/prometheus/prometheus.yml
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: prometheus
+    static_configs: [{ targets: ["localhost:9090"] }]
+  - job_name: otel-collector            # métricas agregadas pelo collector (:8889)
+    static_configs: [{ targets: ["otel-collector:8889"] }]
+```
+
+```yaml
+# infra/loki/config.yaml — single-binary (dev), filesystem, sem auth
+auth_enabled: false
+server: { http_listen_port: 3100 }
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem: { chunks_directory: /loki/chunks, rules_directory: /loki/rules }
+  replication_factor: 1
+  ring: { kvstore: { store: inmemory } }
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index: { prefix: index_, period: 24h }
+limits_config:
+  allow_structured_metadata: true   # ingestão OTLP usa structured metadata p/ atributos
+```
+
+```yaml
+# infra/tempo/config.yaml — recebe traces via OTLP gRPC, armazena em /var/tempo
+server: { http_listen_port: 3200 }
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc: { endpoint: 0.0.0.0:4317 }  # otel-collector envia traces aqui
+storage:
+  trace:
+    backend: local
+    local: { path: /var/tempo/blocks }
+    wal:   { path: /var/tempo/wal }
+```
+
+### Datasources e dashboards provisionados
+
+O Grafana provisiona datasources, dashboards e alertas no boot. Os `uid` dos datasources
+são fixos para que dashboards e alertas os referenciem de forma estável.
+
+```yaml
+# infra/grafana/provisioning/datasources/datasources.yaml
+apiVersion: 1
+datasources:
+  - { name: Prometheus, uid: prometheus, type: prometheus, access: proxy, url: http://prometheus:9090, isDefault: true }
+  - { name: Loki,       uid: loki,       type: loki,       access: proxy, url: http://loki:3100 }
+  - { name: Tempo,      uid: tempo,      type: tempo,      access: proxy, url: http://tempo:3200 }
+```
+
+```yaml
+# infra/grafana/provisioning/dashboards/dashboards.yaml — varre /var/lib/grafana/dashboards
+apiVersion: 1
+providers:
+  - name: showpass
+    folder: ShowPass
+    type: file
+    options: { path: /var/lib/grafana/dashboards }
 ```
 
 ---
 
 ## Passo 17.4 — Alertas Grafana
 
+O unified alerting do Grafana é estrito: cada **grupo** precisa de `folder`, e cada **regra**
+de uma query (datasource real) + um stage de *threshold* no datasource de expressão `__expr__`.
+Por isso a comparação (`> 100`, `> 1000`, `< 2`) **não** fica embutida no PromQL — vira um
+`evaluator` no stage `C`, que é o `condition` final. Embutir no PromQL faz o provisioning falhar.
+
 ```yaml
 # infra/grafana/provisioning/alerting/showpass-alerts.yaml
 apiVersion: 1
 groups:
-  - name: showpass-critical
+  - orgId: 1
+    name: showpass-critical
+    folder: ShowPass          # obrigatório — pasta onde as regras vivem
     interval: 1m
     rules:
       # Alerta: muitos conflitos de reserva (possível ataque ou bug)
       - uid: reservation-conflicts-high
         title: "Alto número de conflitos de reserva"
         condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
         data:
           - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
             model:
-              expr: |
-                rate(showpass_reservations_conflicts_total[5m]) > 100
-        noDataState: OK
+              refId: A
+              instant: true
+              expr: rate(showpass_reservations_conflicts_total[5m])
+          - refId: C            # threshold: A > 100
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [100] }
         annotations:
           summary: "Taxa de conflitos de reserva alta: {{ $values.A }} conflitos/s"
           runbook: "https://wiki.showpass.com.br/runbooks/booking-conflicts"
-        labels:
-          severity: warning
-          team: platform
+        labels: { severity: warning, team: platform }
 
       # Alerta: alta latência de reserva (P95 > 1s)
       - uid: reservation-latency-high
         title: "Latência de reserva alta (P95 > 1s)"
         condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
         data:
           - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
             model:
-              expr: |
-                histogram_quantile(0.95,
-                  rate(showpass_reservations_duration_bucket[5m])
-                ) > 1000
+              refId: A
+              instant: true
+              expr: histogram_quantile(0.95, rate(showpass_reservations_duration_milliseconds_bucket[5m]))
+          - refId: C            # threshold: A > 1000ms
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [1000] }
         annotations:
           summary: "P95 latência de reserva: {{ $values.A }}ms"
-        labels:
-          severity: critical
-          team: platform
-          pagerduty: "true"  # acionar PagerDuty em horário de pico
+        labels: { severity: critical, team: platform, pagerduty: "true" }
 
       # Alerta: booking-service com menos de 2 pods (abaixo do mínimo)
       - uid: booking-pods-low
         title: "Booking Service com poucos pods"
         condition: C
+        for: 2m
+        noDataState: NoData
+        execErrState: Error
         data:
           - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
             model:
-              expr: |
-                kube_deployment_status_replicas_available{deployment="booking-service"} < 2
-        labels:
-          severity: critical
+              refId: A
+              instant: true
+              expr: kube_deployment_status_replicas_available{deployment="booking-service"}
+          - refId: C            # threshold: A < 2
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: lt, params: [2] }
+        labels: { severity: critical, team: platform }
 ```
 
 ---
 
 ## Passo 17.5 — Dashboard de Disponibilidade de Assentos
 
+> 🐛 **Gotcha do nome da métrica (unidade no nome):** o histograma é criado com
+> `unit: 'ms'`. O exporter Prometheus do Collector **acrescenta a unidade ao nome** →
+> a série vira `showpass_reservations_duration_milliseconds_bucket` (não
+> `..._duration_bucket`). Os counters (`...reservations_total`, `...conflicts_total`)
+> não têm unidade e ficam sem sufixo. Por isso o PromQL do P95 usa o nome **com**
+> `_milliseconds`. Se o painel ficar vazio, confira o nome real em
+> Prometheus → *Status → Targets*/autocomplete.
+
+O JSON precisa ser **puro** (sem comentários `//`) e cada painel precisa de `gridPos`,
+`datasource` e `refId` no target — senão o provider de dashboards loga
+`invalid character '/'` ou ignora os painéis. Fragmento (o arquivo completo está no repo):
+
 ```json
-// infra/grafana/dashboards/seat-availability.json (fragmento)
 {
+  "uid": "seat-availability",
   "title": "Seat Availability — Real Time",
+  "schemaVersion": 39,
+  "refresh": "10s",
   "panels": [
     {
+      "id": 1,
       "title": "Reservas por Segundo",
       "type": "stat",
-      "targets": [{
-        "expr": "sum(rate(showpass_reservations_total[1m]))"
-      }]
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(showpass_reservations_total[1m]))"
+        }
+      ]
     },
     {
-      "title": "Taxa de Conflitos (Double Booking Attempts)",
-      "type": "timeseries",
-      "targets": [{
-        "expr": "sum(rate(showpass_reservations_conflicts_total[1m])) by (event_id)"
-      }]
-    },
-    {
+      "id": 3,
       "title": "Latência P95 de Reserva",
       "type": "gauge",
-      "targets": [{
-        "expr": "histogram_quantile(0.95, rate(showpass_reservations_duration_bucket[5m]))"
-      }],
-      "thresholds": {
-        "steps": [
-          { "value": 0, "color": "green" },
-          { "value": 500, "color": "yellow" },
-          { "value": 1000, "color": "red" }
-        ]
-      }
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 500, "color": "yellow" },
+              { "value": 1000, "color": "red" }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, rate(showpass_reservations_duration_milliseconds_bucket[5m]))"
+        }
+      ]
     }
   ]
 }
@@ -303,6 +645,10 @@ groups:
 ---
 
 ## Testando na prática
+
+> **Guia completo:** ver [docs/guia-de-testes.md — Fluxo 9](guia-de-testes.md#12-fluxo-9--observabilidade-métricas--traces--logs).
+> Inclui o simulador de carga (`scripts/observe-sim.mjs`) e os comandos curl para
+> validar as séries no Prometheus, traces no Tempo e logs no Loki.
 
 A stack de observabilidade (Prometheus, Loki, Tempo, Grafana) sobe via Docker Compose. Você vai ver traces distribuídos, métricas e logs correlacionados em tempo real.
 
@@ -321,15 +667,14 @@ pnpm --filter @showpass/booking-service run dev
 
 **1. Acessar o Grafana**
 
-Abra: **http://localhost:3000** (Grafana, não o api-gateway)
-
-> Se o api-gateway também usa a porta 3000, o Grafana é configurado em 3100 no `docker-compose.yml`. Verifique a porta no arquivo.
+Abra: **http://localhost:3002** (mapeado de `3002:3000` no compose, para não colidir com
+o api-gateway na 3000 nem o web na 3001).
 
 Login padrão: `admin` / `admin`
 
 **2. Verificar o Dashboard de Disponibilidade de Assentos**
 
-No menu lateral → Dashboards → "ShowPass — Disponibilidade de Assentos"
+No menu lateral → Dashboards → pasta **ShowPass** → "Seat Availability — Real Time"
 
 Você deve ver em tempo real:
 - Taxa de conflitos de reserva (quantos 409 por minuto)

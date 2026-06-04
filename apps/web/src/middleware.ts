@@ -11,6 +11,10 @@ import { jwtVerify, importSPKI } from 'jose';
 const ORGANIZER_ROUTES = ['/dashboard', '/events/create', '/events/edit'];
 const BUYER_ROUTES = ['/checkout', '/my-tickets'];
 
+// Rotas públicas que usuários AUTENTICADOS não devem ver (home e login).
+// Se chegarem aqui com token válido → redirect para o painel adequado.
+const AUTH_REDIRECT_ROUTES = ['/', '/login'];
+
 function redirectToLogin(
   request: NextRequest,
   type: 'organizer' | 'buyer',
@@ -31,8 +35,10 @@ export async function middleware(
 
   const isOrganizerRoute = ORGANIZER_ROUTES.some((r) => pathname.startsWith(r));
   const isBuyerRoute = BUYER_ROUTES.some((r) => pathname.startsWith(r));
+  const isAuthRedirectRoute = AUTH_REDIRECT_ROUTES.includes(pathname);
 
-  if (!isOrganizerRoute && !isBuyerRoute) {
+  // Rota sem restrição: deixar passar
+  if (!isOrganizerRoute && !isBuyerRoute && !isAuthRedirectRoute) {
     return NextResponse.next();
   }
 
@@ -41,6 +47,37 @@ export async function middleware(
     authHeader?.replace('Bearer ', '') ??
     request.cookies.get('access_token')?.value;
 
+  // ── Rotas públicas (/ e /login) com token ─────────────────────────────────
+  // Usuário já autenticado: redirecionar para o painel adequado ao invés de
+  // mostrar a home/login de novo.
+  if (isAuthRedirectRoute) {
+    if (!token) return NextResponse.next();
+
+    try {
+      const publicKeyPem = process.env.JWT_PUBLIC_KEY.replace(/\\n/g, '\n');
+      const publicKey = await importSPKI(publicKeyPem, 'RS256');
+      const { payload } = await jwtVerify(token, publicKey, {
+        audience: 'showpass-api',
+        issuer: 'showpass-auth',
+      });
+
+      const dest = request.nextUrl.clone();
+      // Organizer → /dashboard   |   buyer → /   (buyer fica na home; só
+      // organizer tem painel. Se buyer tentar /login, deixamos passar —
+      // ele pode querer trocar de conta.)
+      if (payload['type'] === 'organizer') {
+        dest.pathname = '/dashboard';
+        return NextResponse.redirect(dest);
+      }
+      // buyer logado na home: deixar ver a landing (eventos públicos estão lá)
+      return NextResponse.next();
+    } catch {
+      // Token inválido/expirado: deixar ver a rota pública normalmente
+      return NextResponse.next();
+    }
+  }
+
+  // ── Rotas protegidas sem token ─────────────────────────────────────────────
   if (!token) {
     return redirectToLogin(request, isOrganizerRoute ? 'organizer' : 'buyer');
   }
@@ -72,6 +109,10 @@ export async function middleware(
 
 export const config = {
   matcher: [
+    // Rotas públicas que redirecionam para /dashboard quando logado como organizer
+    '/',
+    '/login',
+    // Rotas protegidas
     '/dashboard/:path*',
     '/events/create',
     '/events/edit/:path*',

@@ -24,6 +24,7 @@ import { OrganizerAuthService } from './organizer-auth.service.js';
 import { BuyerAuthService } from './buyer-auth.service.js';
 import { TokenService } from './token.service.js';
 import { OrganizerGuard } from '../../common/guards/organizer.guard.js';
+import { BuyerGuard } from '../../common/guards/buyer.guard.js';
 import { CurrentUser, type AuthenticatedUser } from '@showpass/types/nest';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { z } from 'zod';
@@ -168,6 +169,23 @@ export class AuthController {
     @CurrentUser() user: AuthenticatedUser,
   ): Promise<void> {
     await this.tokenService.revokeAll(user.id, 'organizer');
+    res.clearCookie('refresh_token');
+  }
+
+  /** Logout de buyer — revoga o refresh token do cookie httpOnly. */
+  @Post('buyers/logout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(BuyerGuard)
+  async buyerLogout(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<void> {
+    const rawToken = req.cookies['refresh_token'] as string | undefined;
+
+    if (rawToken) {
+      await this.tokenService.revoke(rawToken);
+    }
+
     res.clearCookie('refresh_token');
   }
 

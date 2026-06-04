@@ -62,16 +62,37 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: (): void => {
+        // Capturar token e tipo ANTES de apagar o estado — o fetch de revogação
+        // precisa do Bearer token (gateway injeta x-user-id/x-user-type a partir
+        // dele). Se apagar primeiro, o gateway recebe a request sem JWT → 401.
+        const { accessToken, user } = get();
+        const userType = user?.type;
+
         set({ accessToken: null, user: null, expiresAt: null });
+
         // Expira o cookie access_token (espelho do token p/ middleware/SSR).
-        // `typeof document` evita ReferenceError se logout for chamado no SSR.
+        // `typeof document` evita ReferenceError se chamado no SSR.
         if (typeof document !== 'undefined') {
           document.cookie = 'access_token=; path=/; max-age=0; SameSite=Lax';
         }
-        // Revoga o refresh token no servidor (cookie httpOnly)
-        void fetch('/auth/logout', {
+
+        // Revoga o refresh token no servidor (cookie httpOnly).
+        // Rota de logout depende do tipo: organizer usa /auth/logout,
+        // buyer usa /auth/buyers/logout (guard diferente).
+        if (!accessToken) return;
+
+        const gatewayUrl = process.env['NEXT_PUBLIC_API_URL'];
+        const route =
+          userType === 'organizer' ? '/auth/logout' : '/auth/buyers/logout';
+
+        void fetch(`${gatewayUrl}${route}`, {
           method: 'POST',
           credentials: 'include',
+          headers: {
+            // Gateway precisa do Bearer para injetar x-user-id/x-user-type
+            // nos headers internos, que os guards do auth-service leem.
+            Authorization: `Bearer ${accessToken}`,
+          },
         }).catch(() => undefined);
       },
 

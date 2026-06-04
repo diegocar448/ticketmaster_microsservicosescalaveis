@@ -74,9 +74,12 @@ apps/web/
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  // @showpass/types é um workspace package em TS cru (sem build) com
-  // specifiers NodeNext `.js`. transpilePackages faz o Next compilá-lo;
-  // resolveExtensions/extensionAlias mapeia o `./x.js` → `./x.ts`.
+  // @showpass/types resolve para o `dist` buildado (condição `import`/`default`).
+  // O source TS cru usa specifiers NodeNext `.js` que o Turbopack NÃO sabe mapear
+  // para `.ts` (não tem extensionAlias). O source só é exposto via a condição custom
+  // `showpass-dev` — pedida só pelo backend e NÃO injetada pelo Next —, enquanto o
+  // web fica com o `dist` (.js reais). transpilePackages mantido para o Next
+  // processar o ESM do pacote sem fricção.
   transpilePackages: ['@showpass/types'],
 
   // Turbopack — estável desde Next 16
@@ -132,7 +135,7 @@ const nextConfig: NextConfig = {
 export default nextConfig;
 ```
 
-> **`transpilePackages: ['@showpass/types']`:** o pacote `@showpass/types` é um workspace em TypeScript cru (entrypoint aponta para `./src/index.ts` em tempo de tipo). Sem `transpilePackages`, o Turbopack não compila o pacote e o build de produção quebra ao topar com `.ts`. `resolveExtensions` no `turbopack` ensina o resolver a mapear specifiers NodeNext `./x.js` → `./x.ts` durante o build do Next.
+> **Resolução do `@showpass/types` no web:** o pacote expõe `src/` (TS cru, com specifiers NodeNext `.js`) só na condição custom `showpass-dev`, pedida apenas pelo backend. O Turbopack **não** sabe mapear `./x.js` → `./x.ts` (não tem `extensionAlias`) — então o web resolve pela condição `import`/`default`, que aponta para o `dist/` **buildado** (`.js` reais). Cuidado importante: o nome da condição **não** pode ser `development`, porque o Next a injeta automaticamente em dev mode e o web acabaria pegando o `src/` cru — daí o nome custom `showpass-dev`. Consequência prática: ao mudar `packages/types/src`, rode `pnpm --filter @showpass/types build` para o web ver. `transpilePackages` fica mantido só para o Next processar o ESM do pacote sem fricção.
 >
 > **Por que removemos `experimental.ppr`:** em Next 16.2 a feature foi mesclada em `cacheComponents` (Server Components com cache explícito via `'use cache'`). O modo antigo deixou de existir; ativá-lo aqui no Capítulo de fundação adicionaria complexidade sem ganho — fica opt-in para capítulos posteriores.
 
@@ -593,7 +596,9 @@ export const config = {
 import type React from 'react';
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
+import Script from 'next/script';
 import { Toaster } from '@/components/ui/toaster';
+import { Header } from '@/components/header';
 import './globals.css';
 
 const inter = Inter({ subsets: ['latin'] });
@@ -605,30 +610,124 @@ export const metadata: Metadata = {
     default: 'ShowPass — Ingressos para os melhores eventos',
   },
   description: 'Compre ingressos para shows, teatro, esportes e muito mais.',
-  openGraph: {
-    siteName: 'ShowPass',
-    type: 'website',
-    locale: 'pt_BR',
-  },
+  openGraph: { siteName: 'ShowPass', type: 'website', locale: 'pt_BR' },
 };
 
-// explicit-function-return-type (eslint do projeto, 'error'): anotar o retorno.
-// React 19 removeu o namespace global JSX — usamos React.JSX.Element.
+// Aplica `.dark` no <html> ANTES da hidratação (default: dark). Sem isso a
+// página pisca claro→escuro no 1º paint. beforeInteractive injeta no <head>.
+const themeScript = `(function(){try{var t=localStorage.getItem('showpass-theme')||'dark';if(t==='dark'){document.documentElement.classList.add('dark');}}catch(e){}})();`;
+
 export default function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }): React.JSX.Element {
   return (
-    <html lang="pt-BR">
+    // suppressHydrationWarning: o script muta a className do <html> antes do
+    // React hidratar → servidor e cliente divergem nesse atributo.
+    <html lang="pt-BR" suppressHydrationWarning>
       <body className={inter.className}>
+        <Script id="theme-no-flash" strategy="beforeInteractive">
+          {themeScript}
+        </Script>
         <Toaster />
+        <Header />
         {children}
       </body>
     </html>
   );
 }
 ```
+
+### Tema dark/light (Tailwind v4, sem dependência extra)
+
+Tailwind v4 ativa dark mode por classe com `@custom-variant`. As cores base trocam
+via CSS vars; o resto usa utilities `dark:`.
+
+```css
+/* apps/web/src/app/globals.css */
+@import 'tailwindcss';
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root  { --background:#ffffff; --foreground:#0a0a0a; --muted:#4b5563; color-scheme:light; }
+.dark  { --background:#0a0a0a; --foreground:#ededed; --muted:#9ca3af; color-scheme:dark; }
+
+body { margin:0; background:var(--background); color:var(--foreground); }
+```
+
+O **ThemeToggle** (client) lê/escreve `localStorage['showpass-theme']` e alterna a
+classe `.dark` no `<html>`. Um gate `mounted` evita mismatch de hidratação (no SSR
+não sabemos o tema do cliente):
+
+```typescript
+// apps/web/src/components/theme-toggle.tsx — 'use client'
+const next = theme === 'dark' ? 'light' : 'dark';
+document.documentElement.classList.toggle('dark', next === 'dark');
+localStorage.setItem('showpass-theme', next);
+```
+
+> Por que **não** usar uma lib de UI (NextUI/HeroUI) ou `next-themes`? O projeto é
+> Tailwind v4 + componentes próprios. Dark mode é nativo do Tailwind, e o no-flash
+> são ~5 linhas — adicionar um design system inteiro só incharia o bundle e criaria
+> conflito de stack.
+
+### Header com estado de autenticação
+
+O `Header` reflete o login lendo o `useAuthStore`. Como o store (Zustand/persist) só
+hidrata no cliente, o bloco de auth fica atrás de `mounted` — o servidor sempre
+renderiza "deslogado", e o cliente troca para `email + Sair` após hidratar.
+
+```typescript
+// apps/web/src/components/header.tsx — 'use client' (trecho)
+const authed = mounted && isAuthenticated();
+// ...
+{authed ? (
+  <>
+    <span>{user?.email}</span>
+    <button onClick={handleLogout}>Sair</button>   {/* logout() limpa store+cookie */}
+  </>
+) : (
+  <Link href="/login">Entrar</Link>
+)}
+```
+
+> Sem isso, a home (estática) sempre mostrava "Entrar" mesmo logado — parecia que o
+> login não pegava. O token sempre esteve no localStorage + cookie; faltava só a UI
+> refletir. `handleLogout` faz `router.refresh()` para revalidar Server Components
+> que liam o cookie `access_token`.
+
+### Design system: shadcn/ui (Base UI + Tailwind v4)
+
+Em vez de uma lib de componentes "pesada" (NextUI/HeroUI/MUI — engine de estilo
+próprio, conflito com Tailwind, atraso no suporte a React 19/Next 16), adotamos o
+**shadcn/ui**: os componentes são **copiados** para `components/ui/` e viram *nossos*.
+
+```bash
+# Inicializa (preset base-nova → Base UI + Lucide; Tailwind v4 detectado)
+pnpm dlx shadcn@latest init -d
+# Adiciona componentes sob demanda
+pnpm dlx shadcn@latest add card table chart sidebar badge
+```
+
+O que isso muda no projeto:
+- **`components.json`** + **`globals.css`** ganha o token set completo (`--background`,
+  `--card`, `--primary`, `--sidebar-*`, `--chart-*`) em `:root`/`.dark` + `@theme inline`.
+  O `@custom-variant dark` e o ThemeToggle continuam valendo (mesma classe `.dark`).
+- **`cn`** ([lib/utils.ts](apps/web/src/lib/utils.ts)) passa a usar `clsx` + `tailwind-merge`
+  (dedupe de classes Tailwind conflitantes — necessário para os overrides via `className`).
+- **Polimorfismo é `render`, não `asChild`.** O preset base-nova usa **Base UI**
+  (`useRender`), então onde o Radix faria `<Button asChild><Link/></Button>` aqui é
+  `<Button render={<Link href="..." />}>Label</Button>`.
+- **Lint:** os arquivos de `components/ui/**` são *vendored* (regenerados via CLI) e não
+  seguem o `explicit-function-return-type` do projeto → são **ignorados** no
+  [eslint.config.mjs](eslint.config.mjs) (mesmo tratamento de `prisma/generated`).
+
+> **Paleta Horizon UI:** os valores dos tokens em `globals.css` foram remapeados para a
+> paleta do [Horizon UI](https://horizon-ui.com) free (marca `#422AFB`/`#7551FF`, fundo
+> `#F4F7FE` / navy `#0b1437`, texto secundário `#707EAE`), com fonte **DM Sans** e a
+> sombra suave `shadow-card`. Como o remap é nos tokens semânticos do shadcn, o app
+> inteiro (sidebar, cards, botões) herda a identidade de uma vez — sem reescrever
+> classes componente a componente. O ThemeToggle continua valendo (mesma classe `.dark`).
 
 ---
 
@@ -669,9 +768,7 @@ import { LoginForm } from './login-form';
 export default function LoginPage(): React.JSX.Element {
   return (
     <Suspense
-      fallback={
-        <div className="min-h-screen flex items-center justify-center bg-gray-50" />
-      }
+      fallback={<div className="min-h-screen bg-[#0a0a0f]" />}
     >
       <LoginForm />
     </Suspense>
@@ -779,9 +876,11 @@ export function LoginForm(): React.JSX.Element {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="w-full max-w-sm p-8 bg-white rounded-2xl shadow-md">
-        <h1 className="text-2xl font-bold text-center mb-6">ShowPass</h1>
+    // Wrapper exibido aqui simplificado — o visual real é o dark "Neural Access"
+    // descrito logo abaixo (fundo #0a0a0f, card glass, glow, inputs neon).
+    <div className="relative flex min-h-screen items-center justify-center bg-[#0a0a0f]">
+      <div className="w-full max-w-md rounded-[20px] border border-blue-500/20 bg-[rgba(15,15,20,0.95)] p-10 backdrop-blur-xl">
+        <h1 className="text-2xl font-bold text-center mb-6 text-slate-50">ShowPass</h1>
 
         <div className="grid grid-cols-2 gap-1 p-1 mb-6 bg-gray-100 rounded-lg">
           {(['buyer', 'organizer'] as const).map((t) => (
@@ -852,6 +951,38 @@ export function LoginForm(): React.JSX.Element {
 }
 ```
 
+### Visual "Neural Access" (login + home imersivas)
+
+A **lógica** acima (tabs, react-hook-form, `onSubmit`) é a fonte da verdade; o
+**visual** foi reestilizado para um dark glassmorphism inspirado no template MIT
+[puikinsh/login-forms](https://github.com/puikinsh/login-forms) (`forms/ai-assistant`).
+No `login-form.tsx` o card branco vira uma tela imersiva:
+
+- Fundo `#0a0a0f` com **nós neurais** (pontos azuis pulsantes) e um **glow radial
+  rotativo** (`@keyframes neural-glow` em `globals.css`).
+- Card glass: `bg-[rgba(15,15,20,0.95)]` + `backdrop-blur-xl` + borda `border-blue-500/20`.
+- Logo com anéis `animate-ping` + núcleo girando (`Sparkles`, `animate-[spin_8s...]`).
+- Inputs glass (`<input>` cru, não o shadcn) com **dot indicador** pulsante e **toggle
+  de senha** (olho); botão **gradiente** `from-blue-500 to-violet-500`.
+
+```typescript
+// O input recebe suppressHydrationWarning: extensões (Kaspersky, gerenciadores de
+// senha) injetam atributos no campo ANTES do React hidratar → mismatch. Suprimir é
+// o fix recomendado pelo React e afeta só os atributos deste elemento.
+<input type="email" {...register('email')} suppressHydrationWarning className={inputClass} />
+```
+
+A **home** (`app/page.tsx`) usa a mesma linguagem (fundo neural, logo brilhante,
+título em gradiente `bg-clip-text`) com **um único CTA "Entrar"**. Para isso, o
+`Header` global **some** na home e nas telas imersivas — em
+[components/header.tsx](apps/web/src/components/header.tsx):
+
+```typescript
+if (pathname === '/' || HIDE_HEADER_PREFIXES.some((p) => pathname.startsWith(p))) {
+  return null;  // '/', '/login' e rotas do organizer não mostram o Header global
+}
+```
+
 ---
 
 ## Passo 10.9 — Variáveis de Ambiente
@@ -886,68 +1017,91 @@ JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nSUBSTITUA\n-----END PUBLIC KEY-----"
 
 ## Testando na prática
 
-Este é o primeiro capítulo com interface visual no browser. Você vai ver o fluxo de login funcionando de ponta a ponta.
+> **Guia completo e atualizado:** ver [docs/guia-de-testes.md](guia-de-testes.md).
+> Esta seção traz um resumo focado no frontend (cap-10).
 
 ### O que precisa estar rodando
 
 ```bash
-# Terminal 1 — infraestrutura
-docker compose up -d
+# Infraestrutura
+make infra-up
 
-# Terminal 2 — auth-service
-pnpm --filter @showpass/auth-service run dev          # porta 3006
-
-# Terminal 3 — api-gateway
-pnpm --filter @showpass/api-gateway run dev           # porta 3000
-
-# Terminal 4 — frontend
-pnpm --filter @showpass/web run dev                   # porta 3001
+# Serviços (4 terminais)
+pnpm --filter @showpass/auth-service dev     # :3006
+pnpm --filter @showpass/api-gateway  dev     # :3000
+pnpm --filter @showpass/event-service dev    # :3003
+pnpm --filter @showpass/web          dev     # :3001
 ```
 
 ### Passo a passo no browser
 
-**1. Abrir o frontend**
+**1. Home imersiva**
 
-Acesse: **http://localhost:3001**
+Acesse `http://localhost:3001` — fundo escuro com nós neurais pulsantes, logo animado,
+título em gradiente e **um único botão "Entrar"** (sem Header nessa tela).
 
-Você deve ver a home page com header de navegação. Como ainda não há eventos cadastrados, o corpo estará vazio (ou com estado de "nenhum evento").
+**2. Spinner de loading**
 
-**2. Acessar a tela de login unificada**
+Clique em **Entrar**:
+- Spinner cobre a tela instantaneamente (bloqueia clique duplo)
+- Permanece até o formulário de login renderizar completamente
 
-Navegue para: **http://localhost:3001/login**
+**3. Tela de login "Neural Access"**
 
-Você verá o seletor **Comprador | Organizador**. Selecione **Organizador**.
+Você deve ver:
+- Card glass com glow rotativo e borda azul
+- Logo com anéis `animate-ping`
+- Abas **Comprador | Organizador**
+- Inputs com dot indicador azul pulsante e toggle de senha (ícone olho)
+- Botão gradiente azul→violeta
 
-**3. Fazer login como organizer**
+**4. Registrar e logar como organizer**
 
-Use as credenciais criadas no Cap 04:
+```bash
+# Registrar (via API — uma única vez)
+curl -s -X POST http://localhost:3000/auth/organizers/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"org@showpass.com","password":"Senha@12345","name":"Demo"}' \
+  | python3 -m json.tool
+```
 
-- Email: `admin@rockshows.com.br`
-- Senha: `Senha@Forte123`
+Na tela de login: aba **Organizador** → `org@showpass.com` / `Senha@12345` → **Entrar**.
 
-Após o login, você deve ser redirecionado para o dashboard. O `setAuth` decodifica o JWT e popula o store com `{ id, email, type: 'organizer', organizerId }` sem nenhum round-trip adicional ao backend.
+**5. Spinner contínuo login → dashboard**
 
-**4. Verificar que o token foi armazenado**
+O overlay permanece desde o clique até o `/dashboard` terminar de carregar — sem flash
+entre o fim da request de auth e o início do carregamento da próxima página.
 
-Abra o DevTools do browser (F12) → Application → Cookies.
+**6. Verificar tokens no DevTools (F12)**
 
-Você verá o cookie `refresh_token` com flag `httpOnly` — **não acessível via JavaScript** (OWASP A07).
+| Local | O que verificar |
+|---|---|
+| Application → Cookies | `refresh_token` com `httpOnly` (OWASP A07) |
+| Application → Local Storage → `showpass-auth` | `accessToken`, `expiresAt`, `user.type: "organizer"` |
+| Network | `POST :3000/auth/organizers/login` → 200 |
 
-No Zustand (Application → Local Storage → `showpass-auth`), você verá o estado de auth com `accessToken`, `expiresAt`, e o objeto `user` populado a partir dos claims do JWT.
+**7. Auto-redirect de usuário logado**
 
-**5. Verificar proteção de rota**
+Estando logado como organizer, navegue para `http://localhost:3001/` ou
+`http://localhost:3001/login` — o middleware Edge redireciona instantaneamente
+para `/dashboard` sem flash de conteúdo.
 
-Faça logout e tente acessar diretamente: **http://localhost:3001/dashboard**
+**8. Proteção de rota**
 
-O middleware Edge Runtime deve redirecionar imediatamente para `/login?redirect=/dashboard` sem flash de conteúdo.
+Faça logout e tente acessar `http://localhost:3001/dashboard` — redireciona para
+`/login?as=organizer&redirect=%2Fdashboard`.
 
-**6. Verificar auto-refresh do token**
+**9. Logout sem erro no Network**
 
-Aguarde 15 minutos com a aba aberta (ou manipule `expiresAt` no DevTools → Application → Local Storage para um timestamp passado). Ao fazer qualquer ação, o `apiRequest` chama `tryRefreshToken` que valida a resposta com `RefreshResponseSchema` e chama `setAuth` novamente — sem logout e sem intervenção do usuário.
+Clique em **Sair** com o DevTools aberto (filtro "logout"):
+- `POST localhost:3000/auth/logout` → **204** (não 401/404)
+- Header `Authorization: Bearer <token>` presente na request
 
-**7. Verificar request para o API Gateway**
+**10. Tema dark/light**
 
-No DevTools → Network, filtre por `localhost:3000`. Todas as requests do frontend passam pelo gateway na porta **3000**, que adiciona os headers `x-user-id` e `x-organizer-id` antes de fazer proxy para os serviços internos. A porta **3001** é exclusivamente a aplicação Next.js — não aparece como destino de API.
+No topbar do painel, clique no toggle (sol/lua). O tema persiste em
+`localStorage['showpass-theme']` e aplica sem flash na próxima carga (script
+`beforeInteractive` no `<head>`).
 
 ---
 
