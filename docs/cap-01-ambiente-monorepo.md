@@ -1,5 +1,10 @@
 # Capítulo 1 — Ambiente de Desenvolvimento & Monorepo
 
+> **Pré-requisito:** configure o ambiente Claude Code antes de começar.
+> Ver **[Capítulo 0 — Ambiente Claude Code](cap-00-ambiente-claude-code.md)** —
+> os arquivos `CLAUDE.md`, `settings.json`, `skills/` e `hooks/` criados lá
+> guiam todo o desenvolvimento a partir daqui.
+
 > **Objetivo:** Criar o monorepo Turborepo com Docker Compose completo, TypeScript strict configurado, ESLint/Prettier, todos os serviços de infraestrutura rodando em containers, e o esqueleto do CI/CD ativo desde o primeiro commit.
 
 ## O que você vai aprender
@@ -474,7 +479,10 @@ services:
     restart: unless-stopped
     env_file: apps/web/.env
     ports:
-      - "3000:3000"
+      # Web na 3001 (NEXTAUTH_URL espera :3001); a 3000 é do api-gateway.
+      # Mapear ambos em 3000 causa conflito: o web ocupa a porta e o gateway
+      # fica inacessível pelo host, quebrando login/checkout no browser.
+      - "3001:3001"
     volumes:
       - ./apps/web/src:/app/src
     networks:
@@ -858,7 +866,9 @@ module.exports = {
 
 > **Por que SWC e não tsx/esbuild?**  
 > NestJS usa `emitDecoratorMetadata` para injeção de dependências (DI). O `tsx` (baseado em esbuild) **não suporta** essa flag — os decorators são removidos em tempo de compilação e o NestJS cria instâncias com parâmetros `undefined`. O SWC suporta `decoratorMetadata: true` nativamente.  
-> O loader `@swc-node/register/esm` é usado no script `dev`: `node --watch --conditions=development --loader @swc-node/register/esm src/main.ts`. O `--conditions=development` faz o Node resolver os packages internos (`@showpass/types|redis|kafka`) para `src/` (TS) em vez de `dist/` — assim o dev não precisa buildar os packages (em prod, sem essa flag, resolve para `dist/`).
+> O loader `@swc-node/register/esm` é usado no script `dev`: `node --watch --conditions=showpass-dev --loader @swc-node/register/esm src/main.ts`. O `--conditions=showpass-dev` faz o Node resolver os packages internos (`@showpass/types|redis|kafka`) para `src/` (TS) em vez de `dist/` — assim o dev não precisa buildar os packages (em prod, sem essa flag, resolve para `dist/`).
+>
+> **Por que `showpass-dev` e não `development`?** O Next.js **injeta automaticamente** a condição `development` em dev mode. Se a condição de export se chamasse `development`, o Turbopack do `web` resolveria os packages para o `src/` cru (TS com specifiers `.js`) — e ele **não** sabe mapear `.js`→`.ts` (não tem `extensionAlias`), quebrando o build. Com um nome custom (`showpass-dev`), só o backend (que passa a flag explicitamente) pega o `src/`; o `web` cai no `import`→`dist/`.
 
 ### `"type": "module"` em todos os `package.json` dos serviços
 
