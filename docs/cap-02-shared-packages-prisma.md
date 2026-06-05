@@ -41,13 +41,13 @@ packages/types/
   "exports": {
     ".": {
       "types": "./src/index.ts",
-      "development": "./src/index.ts",
+      "showpass-dev": "./src/index.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
     "./nest": {
       "types": "./src/decorators/current-user.decorator.ts",
-      "development": "./src/decorators/current-user.decorator.ts",
+      "showpass-dev": "./src/decorators/current-user.decorator.ts",
       "require": "./dist/decorators/current-user.decorator.js",
       "import": "./dist/decorators/current-user.decorator.js",
       "default": "./dist/decorators/current-user.decorator.js"
@@ -1202,7 +1202,9 @@ pnpm --filter @showpass/kafka run type-check
 pnpm --filter @showpass/redis run type-check
 ```
 
-Cada comando deve terminar sem erros. Os pacotes internos têm um `build` (`tsc` → `dist/`) usado nas imagens de **produção** (`node dist/main.js` não consegue carregar `.ts` cru). Mas em **desenvolvimento** não é preciso buildar: o `exports` tem a condição `development` apontando para `src/index.ts`, e os serviços rodam com `node --conditions=development` — o SWC transpila o TS na hora. Em prod (sem essa condição), o `import`/`default` resolve para `dist/index.js`.
+Cada comando deve terminar sem erros. Os pacotes internos têm um `build` (`tsc` → `dist/`) usado nas imagens de **produção** (`node dist/main.js` não consegue carregar `.ts` cru). Mas em **desenvolvimento** os serviços de backend não precisam buildar: o `exports` tem a condição custom `showpass-dev` apontando para `src/index.ts`, e eles rodam com `node --conditions=showpass-dev` — o SWC transpila o TS na hora. Sem essa condição (prod, ou bundlers como o Turbopack do `web`), o `import`/`default` resolve para `dist/index.js`.
+
+> ⚠️ A condição se chama `showpass-dev` (não `development`) de propósito: o Next.js injeta `development` automaticamente em dev mode, e o Turbopack resolveria o `src/` cru — que ele não consegue compilar (specifiers `.js`→`.ts` sem `extensionAlias`). Um nome custom garante que só o backend, que passa a flag explícita, use o `src/`; o `web` fica no `dist/`. Isso significa que, ao alterar `packages/*/src`, é preciso `pnpm --filter <pkg> build` para o `web` enxergar (o backend vê na hora).
 
 > **Por que a condição `development`?** Sem ela, mudar `main` para `dist/index.js` (necessário para prod) quebraria o `pnpm dev` num clone limpo — o `node` tentaria carregar `dist/` que ainda não foi buildado. A condição mantém os dois fluxos: dev usa `src` (zero build), prod usa `dist`.
 

@@ -20,7 +20,7 @@
   "name": "@showpass/event-service",
   "version": "0.0.1",
   "scripts": {
-    "dev": "node --watch --conditions=development --loader @swc-node/register/esm src/main.ts",
+    "dev": "node --watch --conditions=showpass-dev --loader @swc-node/register/esm src/main.ts",
     "build": "tsc --project tsconfig.build.json",
     "start": "node dist/main.js",
     "test": "jest",
@@ -282,15 +282,31 @@ export class EventsService {
   ) {}
 
   async create(organizerId: string, dto: CreateEventDto) {
-    // Gerar slug único a partir do título
-    const baseSlug = slugify(dto.title, { lower: true, strict: true });
-    const slug = `${baseSlug}-${Date.now()}`;
+    // Slug limpo e legível (ex: "rock-in-rio"). Sufixo incremental (-2, -3)
+    // só em caso de colisão de título. Timestamp apenas como fallback extremo.
+    const slug = await this.generateUniqueSlug(dto.title);
 
     const event = await this.eventsRepo.create(organizerId, { ...dto, slug });
 
     this.logger.log('Evento criado', { eventId: event.id, organizerId });
 
     return event;
+  }
+
+  private async generateUniqueSlug(title: string): Promise<string> {
+    const baseSlug = slugify(title, { lower: true, strict: true });
+
+    // Slug base disponível? Retornar limpo (ex: "rock-in-rio")
+    if (!(await this.eventsRepo.slugExists(baseSlug))) return baseSlug;
+
+    // Colisão de título: tentar -2, -3, -4...
+    for (let n = 2; n < 1000; n++) {
+      const candidate = `${baseSlug}-${String(n)}`;
+      if (!(await this.eventsRepo.slugExists(candidate))) return candidate;
+    }
+
+    // Fallback extremo (improvável): timestamp garante unicidade
+    return `${baseSlug}-${String(Date.now())}`;
   }
 
   async getById(id: string, organizerId?: string) {
@@ -1308,6 +1324,8 @@ Resposta esperada: `403 Forbidden` ou `404 Not Found` — o segundo organizer n�
 5. **Plan limits** — checados no service antes de criar venue/evento; mensagem clara sobre upgrade
 6. **Cache-Aside com TTL por status** — event on_sale cacheia 30s; sold_out cacheia 1h; invalidação na mudança de status
 7. **Kafka emit** — quando evento vai para `on_sale`, notifica search-service (para indexar) e outros consumidores
+8. **Slug limpo com fallback incremental** — `generateUniqueSlug()` gera `rock-in-rio` (base), `rock-in-rio-2` (colisão), timestamp só como fallback extremo
+9. **GET /events/browse** — rota pública (sem JWT) para listagem de eventos `on_sale`; adicionada ao `exclude()` do gateway
 
 ---
 

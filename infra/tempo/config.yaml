@@ -1,0 +1,28 @@
+# infra/tempo/config.yaml
+# Tempo single-binary (dev) — recebe traces via OTLP gRPC, armazena em filesystem.
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317  # otel-collector envia traces aqui
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 24h  # dev: reter traces por 24h
+
+storage:
+  trace:
+    backend: local
+    local:
+      # /var/tempo já existe na imagem grafana/tempo com dono uid 10001 (usuário `tempo`);
+      # um named volume herda essa permissão. /tmp/tempo seria criado root → mkdir negado.
+      path: /var/tempo/blocks
+    wal:
+      path: /var/tempo/wal

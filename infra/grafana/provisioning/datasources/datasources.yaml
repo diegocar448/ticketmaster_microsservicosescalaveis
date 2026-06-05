@@ -1,0 +1,24 @@
+# infra/grafana/provisioning/datasources/datasources.yaml
+# Datasources provisionados automaticamente no boot do Grafana.
+# Os `uid` são fixos para que dashboards e alertas possam referenciá-los de forma estável.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200

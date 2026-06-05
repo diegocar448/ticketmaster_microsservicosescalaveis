@@ -39,6 +39,22 @@ export class EventsController {
   // ─── Rotas públicas ────────────────────────────────────────────────────────
 
   /**
+   * Listagem pública de eventos on_sale — usada pela home do frontend.
+   * Sem autenticação. Ordem por data de início (mais próximos primeiro).
+   * Rota estática declarada antes de ':slug/public' (NestJS casa na ordem).
+   */
+  @Get('browse')
+  listPublic(
+    @Query('page') page = '1',
+    @Query('limit') limit = '12',
+  ): ReturnType<EventsService['listPublic']> {
+    return this.eventsService.listPublic({
+      page: Math.max(1, parseInt(page, 10) || 1),
+      limit: Math.min(50, parseInt(limit, 10) || 12),
+    });
+  }
+
+  /**
    * Página pública do evento — usado pelo frontend na compra de ingressos.
    * Cache Redis ativo (TTL varia por status do evento).
    */

@@ -1,11 +1,8 @@
-// apps/web/src/lib/utils.ts
-//
-// Helpers utilitários. `cn` mantém o padrão do shadcn/ui (concatenação
-// condicional de classes Tailwind) sem trazer `clsx` + `tailwind-merge`
-// — bundle menor, suficiente para nosso uso.
+// cn padrão do shadcn: clsx (concatenação condicional) + tailwind-merge (dedupe
+// de classes Tailwind conflitantes, ex.: px-2 + px-4 → px-4).
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
 
-export function cn(
-  ...classes: Array<string | false | null | undefined>
-): string {
-  return classes.filter(Boolean).join(' ');
+export function cn(...inputs: ClassValue[]): string {
+  return twMerge(clsx(inputs));
 }

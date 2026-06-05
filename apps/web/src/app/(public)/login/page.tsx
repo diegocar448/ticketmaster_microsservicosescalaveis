@@ -6,15 +6,12 @@
 
 import type React from 'react';
 import { Suspense } from 'react';
+import { FullScreenLoader } from '@/components/loading-overlay';
 import { LoginForm } from './login-form';
 
 export default function LoginPage(): React.JSX.Element {
   return (
-    <Suspense
-      fallback={
-        <div className="min-h-screen flex items-center justify-center bg-gray-50" />
-      }
-    >
+    <Suspense fallback={<FullScreenLoader label="Carregando…" />}>
       <LoginForm />
     </Suspense>
   );

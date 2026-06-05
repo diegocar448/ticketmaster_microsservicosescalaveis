@@ -1,0 +1,47 @@
+# infra/otel/collector-config.yaml
+# OpenTelemetry Collector — recebe OTLP dos serviços NestJS e distribui:
+#   - traces  → Tempo (OTLP gRPC)
+#   - métricas → expostas em :8889 para o Prometheus raspar
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318  # serviços enviam OTLP/HTTP aqui (porta exposta)
+      grpc:
+        endpoint: 0.0.0.0:4319  # gRPC interno (4317 é do Tempo no host)
+
+processors:
+  batch: {}
+
+exporters:
+  # Traces → Tempo (mesma rede `data`, OTLP gRPC)
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  # Métricas → endpoint que o Prometheus raspa (job otel-collector)
+  prometheus:
+    endpoint: 0.0.0.0:8889
+  # Logs → Loki via seu endpoint OTLP nativo (Loki 3.x: /otlp/v1/logs).
+  # otlphttp acrescenta /v1/logs ao endpoint, por isso termina em /otlp.
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/tempo, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/loki, debug]

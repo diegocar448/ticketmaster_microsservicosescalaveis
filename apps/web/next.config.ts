@@ -3,9 +3,12 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  // @showpass/types é um workspace package em TS cru (sem build) com
-  // specifiers NodeNext `.js`. transpilePackages faz o Next compilá-lo;
-  // resolveExtensions/extensionAlias mapeia o `./x.js` → `./x.ts`.
+  // @showpass/types resolve para o `dist` buildado (condição `import`/`default`).
+  // O source TS cru usa specifiers NodeNext `.js` que o Turbopack NÃO sabe mapear
+  // para `.ts` (ele não tem extensionAlias). Por isso o source só é exposto via a
+  // condição custom `showpass-dev` — pedida só pelo backend (`--conditions=showpass-dev`)
+  // e NÃO injetada pelo Next —, enquanto o web fica com o `dist` (.js reais).
+  // transpilePackages mantido para o Next processar o ESM do pacote sem fricção.
   transpilePackages: ['@showpass/types'],
 
   // Turbopack — estável desde Next 16

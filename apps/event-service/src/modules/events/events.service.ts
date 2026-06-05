@@ -57,9 +57,10 @@ export class EventsService {
   ) {}
 
   async create(organizerId: string, dto: CreateEventDto): Promise<EventCreated> {
-    // Slug único = título normalizado + timestamp (evita colisões)
-    const baseSlug = slugify(dto.title, { lower: true, strict: true });
-    const slug = `${baseSlug}-${String(Date.now())}`;
+    // Slug limpo e legível (ex: "showpass-festival-2026"). Só adiciona sufixo
+    // numérico (-2, -3...) se já existir outro evento com o mesmo título —
+    // mantém URLs amigáveis em vez de poluir com timestamp.
+    const slug = await this.generateUniqueSlug(dto.title);
 
     const event = await this.eventsRepo.create(organizerId, {
       ...dto,
@@ -71,6 +72,27 @@ export class EventsService {
     this.logger.log(`Evento criado: eventId=${event.id}, organizerId=${organizerId}`);
 
     return event;
+  }
+
+  /**
+   * Gera um slug único e legível a partir do título.
+   * Tenta o slug base; em caso de colisão, adiciona sufixo incremental (-2, -3).
+   * O @unique no banco é o backstop final contra a race entre check e insert.
+   */
+  private async generateUniqueSlug(title: string): Promise<string> {
+    const baseSlug = slugify(title, { lower: true, strict: true });
+
+    if (!(await this.eventsRepo.slugExists(baseSlug))) return baseSlug;
+
+    // Colisão: procurar o primeiro sufixo livre. Limite alto evita loop infinito
+    // num cenário improvável de milhares de eventos homônimos.
+    for (let n = 2; n < 1000; n++) {
+      const candidate = `${baseSlug}-${String(n)}`;
+      if (!(await this.eventsRepo.slugExists(candidate))) return candidate;
+    }
+
+    // Fallback extremo: timestamp garante unicidade se os 1000 sufixos colidirem.
+    return `${baseSlug}-${String(Date.now())}`;
   }
 
   async getById(id: string, organizerId?: string): Promise<EventWithDetails> {
@@ -112,6 +134,11 @@ export class EventsService {
     params: { status?: EventStatus; page: number; limit: number },
   ): Promise<EventList> {
     return this.eventsRepo.listByOrganizer(organizerId, params);
+  }
+
+  /** Listagem pública de eventos on_sale para compradores. Sem autenticação. */
+  async listPublic(params: { page: number; limit: number }): Promise<EventList> {
+    return this.eventsRepo.listPublic(params);
   }
 
   /**

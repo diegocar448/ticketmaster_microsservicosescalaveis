@@ -2,14 +2,16 @@
 //
 // Client Component OBRIGATÓRIO: Recharts usa APIs do DOM (ResizeObserver, SVG).
 // Importar Recharts num Server Component quebra em runtime.
+//
+// Estilo Horizon UI: áreas suaves com gradiente, grid discreto, eixos via tokens
+// (dark-aware). Receita (indigo) no eixo esquerdo, ingressos (violeta) no direito.
 'use client';
 
 import type React from 'react';
 import {
   ResponsiveContainer,
-  ComposedChart,
-  Bar,
-  Line,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -36,24 +38,53 @@ export function SalesChart({ data }: { data: DayData[] }): React.JSX.Element {
 
   return (
     <ResponsiveContainer width="100%" height={300}>
-      <ComposedChart data={formatted}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-        <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+      <AreaChart data={formatted} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
+        <defs>
+          <linearGradient id="fillRevenue" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.35} />
+            <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+          </linearGradient>
+          <linearGradient id="fillTickets" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="#a855f7" stopOpacity={0.25} />
+            <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid
+          vertical={false}
+          strokeDasharray="3 3"
+          stroke="var(--border)"
+        />
+        <XAxis
+          dataKey="date"
+          tickLine={false}
+          axisLine={false}
+          tick={{ fontSize: 12, fill: 'var(--muted-foreground)' }}
+        />
         <YAxis
           yAxisId="revenue"
           orientation="left"
-          tick={{ fontSize: 12 }}
+          tickLine={false}
+          axisLine={false}
+          tick={{ fontSize: 12, fill: 'var(--muted-foreground)' }}
           tickFormatter={(v: number) => `R$${(v / 1000).toFixed(0)}k`}
         />
         <YAxis
           yAxisId="tickets"
           orientation="right"
-          tick={{ fontSize: 12 }}
+          tickLine={false}
+          axisLine={false}
+          tick={{ fontSize: 12, fill: 'var(--muted-foreground)' }}
         />
         <Tooltip
+          contentStyle={{
+            borderRadius: 12,
+            border: '1px solid var(--border)',
+            background: 'var(--popover)',
+            color: 'var(--popover-foreground)',
+            fontSize: 12,
+          }}
           // Recharts 3: `value` é ValueType|undefined e `name` é o NOME da
-          // série ("Receita"/"Ingressos"), não a dataKey. Formatamos receita
-          // como BRL; ingressos como inteiro. O 2º item da tupla é o rótulo.
+          // série ("Receita"/"Ingressos"). Formatamos receita como BRL.
           formatter={(value, name) => {
             const num = typeof value === 'number' ? value : Number(value ?? 0);
             return [
@@ -67,23 +98,29 @@ export function SalesChart({ data }: { data: DayData[] }): React.JSX.Element {
             ];
           }}
         />
-        <Legend />
-        <Bar
-          yAxisId="revenue"
-          dataKey="revenue"
-          fill="#3b82f6"
-          radius={[4, 4, 0, 0]}
-          name="Receita"
+        <Legend
+          iconType="circle"
+          wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
         />
-        <Line
+        <Area
+          yAxisId="revenue"
+          type="monotone"
+          dataKey="revenue"
+          name="Receita"
+          stroke="#6366f1"
+          strokeWidth={2.5}
+          fill="url(#fillRevenue)"
+        />
+        <Area
           yAxisId="tickets"
           type="monotone"
           dataKey="tickets"
-          stroke="#f97316"
-          strokeWidth={2}
           name="Ingressos"
+          stroke="#a855f7"
+          strokeWidth={2.5}
+          fill="url(#fillTickets)"
         />
-      </ComposedChart>
+      </AreaChart>
     </ResponsiveContainer>
   );
 }

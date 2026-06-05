@@ -348,31 +348,34 @@ export default async function DashboardPage() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <MetricCard
           title="Receita Total"
-          value={new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
-            .format(stats.totalRevenue)}
+          value={brl.format(stats.totalRevenue)}
           trend="estimativa bruta"
-          icon="💰"
+          icon={DollarSign}
+          accentClass="bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-400"
         />
         <MetricCard
           title="Ingressos Vendidos"
           value={stats.totalTicketsSold.toLocaleString('pt-BR')}
-          icon="🎟️"
+          icon={Ticket}
+          accentClass="bg-violet-50 text-violet-600 dark:bg-violet-500/10 dark:text-violet-400"
         />
         <MetricCard
           title="Eventos Ativos"
           value={String(stats.activeEvents)}
-          icon="🎪"
+          icon={CalendarCheck2}
+          accentClass="bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400"
         />
         <MetricCard
           title="Conversão"
           value="—"
           trend="disponível no cap-17"
-          icon="📈"
+          icon={TrendingUp}
+          accentClass="bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400"
         />
       </div>
 
       {/* Gráfico de vendas — Client Component */}
-      <div className="bg-white rounded-2xl border p-6 mb-6">
+      <div className="rounded-3xl border bg-card p-6 shadow-sm mb-6">
         <div className="flex justify-between items-center mb-4">
           <h2 className="font-semibold text-lg">Vendas por Dia</h2>
           <ExportCsvButton />
@@ -383,7 +386,7 @@ export default async function DashboardPage() {
       </div>
 
       {/* Top Eventos */}
-      <div className="bg-white rounded-2xl border p-6">
+      <div className="rounded-3xl border bg-card p-6 shadow-sm">
         <h2 className="font-semibold text-lg mb-4">Top Eventos</h2>
         <table className="w-full text-sm">
           <thead>
@@ -430,31 +433,57 @@ function ExportCsvButton() {
 }
 ```
 
-O `MetricCard` é um card de KPI sem estado — server-safe, renderiza junto com a página sem custo de hidratação:
+O `MetricCard` é um card de KPI sem estado — server-safe, renderiza junto com a
+página sem custo de hidratação. O visual segue o estilo **Horizon UI** (card
+`rounded-3xl`, ícone Lucide num badge colorido, número grande), com cores via tokens
+shadcn para ficar **dark-aware**:
 
 ```typescript
 // apps/web/src/components/dashboard/metric-card.tsx
+import type { LucideIcon } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface MetricCardProps {
   title: string;
   value: string;
-  icon: string;
-  trend?: string;  // legenda secundária (ex: "estimativa bruta")
+  icon: LucideIcon;            // ícone Lucide (não emoji)
+  accentClass?: string;        // cor do badge (bg+text), passada pela página
+  trend?: string;
 }
 
-export function MetricCard({ title, value, icon, trend }: MetricCardProps) {
+export function MetricCard({
+  title, value, icon: Icon, accentClass, trend,
+}: MetricCardProps): React.JSX.Element {
   return (
-    <div className="bg-white rounded-2xl border p-5">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-sm text-gray-500">{title}</span>
-        <span className="text-xl" aria-hidden="true">{icon}</span>
+    <div className="flex items-center gap-4 rounded-3xl border bg-card p-5 shadow-sm transition-shadow hover:shadow-md">
+      <div className={cn('flex size-12 shrink-0 items-center justify-center rounded-2xl', accentClass)}>
+        <Icon className="size-6" aria-hidden="true" />
       </div>
-      <p className="text-2xl font-bold">{value}</p>
-      {trend && <p className="text-xs text-gray-400 mt-1">{trend}</p>}
+      <div className="min-w-0">
+        <p className="truncate text-sm text-muted-foreground">{title}</p>
+        <p className="text-2xl font-bold tracking-tight">{value}</p>
+        {trend ? <p className="mt-0.5 truncate text-xs text-muted-foreground/70">{trend}</p> : null}
+      </div>
     </div>
   );
 }
 ```
+
+Na página, cada card recebe um ícone Lucide + uma cor de accent (indigo/violet/
+emerald/amber), e o gráfico vira uma **área com gradiente** (`AreaChart` do Recharts,
+eixos via `var(--muted-foreground)`) em vez do `ComposedChart` com barras:
+
+```typescript
+import { DollarSign, Ticket, CalendarCheck2, TrendingUp } from 'lucide-react';
+
+<MetricCard title="Receita Total" value={brl.format(stats.totalRevenue)}
+  icon={DollarSign}
+  accentClass="bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-400" />
+// ...Ingressos (violet), Eventos (emerald), Conversão (amber)
+```
+
+> A tabela "Top Eventos" ganhou um **empty state** ("Nenhum evento ainda") — sem
+> dados, o painel mostra os cards zerados + a mensagem, em vez de uma tabela vazia.
 
 ---
 
@@ -615,7 +644,115 @@ export async function GET(): Promise<NextResponse> {
 
 ---
 
+## Passo 13.5 — Shell do painel (sidebar shadcn/ui)
+
+Até aqui o dashboard era só a página de conteúdo. O **painel admin** precisa de uma
+navegação própria — uma sidebar. Usamos os componentes `sidebar`/`sheet` do
+shadcn/ui (ver [cap-10 → shadcn/ui](cap-10-frontend-foundation.md)). O grupo de rotas
+`(organizer)` ganha um `layout.tsx` que envolve as páginas no shell.
+
+```typescript
+// apps/web/src/app/(organizer)/layout.tsx
+import {
+  SidebarInset, SidebarProvider, SidebarTrigger,
+} from '@/components/ui/sidebar';
+import { AppSidebar } from '@/components/dashboard/app-sidebar';
+
+export default function OrganizerLayout({
+  children,
+}: { children: React.ReactNode }): React.JSX.Element {
+  return (
+    <SidebarProvider>
+      <AppSidebar />
+      <SidebarInset>
+        <header className="flex h-12 items-center gap-2 border-b px-4">
+          <SidebarTrigger />
+          <span className="text-sm font-medium">Painel do Organizador</span>
+          {/* Ações do topbar: alternar tema + logout */}
+          <div className="ml-auto flex items-center gap-2">
+            <ThemeToggle />
+            <LogoutButton />
+          </div>
+        </header>
+        <div className="p-4 sm:p-6">{children}</div>
+      </SidebarInset>
+    </SidebarProvider>
+  );
+}
+```
+
+A `AppSidebar` ([components/dashboard/app-sidebar.tsx](apps/web/src/components/dashboard/app-sidebar.tsx))
+lista os itens de navegação com ícones Lucide. Note o `render={<Link/>}` (padrão Base
+UI — equivalente ao `asChild` do Radix) e o `isActive` por `usePathname`:
+
+```typescript
+<SidebarMenuButton
+  isActive={pathname === item.url}
+  tooltip={item.title}
+  render={<Link href={item.url} />}
+>
+  <item.icon />
+  <span>{item.title}</span>
+</SidebarMenuButton>
+```
+
+> O `Header` global (cap-10) **some** nas rotas do organizer (`/dashboard`,
+> `/events/create`, `/events/edit`) — lá a sidebar é a navegação. Ele faz isso com
+> `usePathname()` retornando `null` nesses prefixos.
+
+A sidebar tem um **footer com o usuário** (avatar com a inicial + e-mail + botão
+"Sair"), no padrão `NavUser` do template [next-shadcn-admin-dashboard](https://github.com/arhamkhnz/next-shadcn-admin-dashboard)
+(MIT). Como o e-mail vem do `useAuthStore` (só hidrata no cliente), há o gate
+`mounted` — o SSR mostra "Organizador" e o cliente troca pelo e-mail real.
+
+### Estética Horizon UI
+
+As cores do painel seguem a paleta do **Horizon UI** (free), remapeada nos tokens
+semânticos do shadcn em `globals.css` — então sidebar, cards e tudo herdam de uma vez:
+fundo `#F4F7FE` / navy `#0b1437` (dark), marca `#422AFB`/`#7551FF`, texto secundário
+`#707EAE`, fonte **DM Sans**, e a sombra suave `shadow-card`. O dashboard ganhou um
+**banner com gradiente de marca** (elemento-assinatura do Horizon) no topo.
+
+## Passo 13.6 — Data-table de eventos (TanStack)
+
+A tabela "Top Eventos" usa um **data-table** com [@tanstack/react-table](https://tanstack.com/table)
+(headless) + os componentes `Table` do shadcn — mesmo padrão do template
+next-shadcn-admin-dashboard. Ordenação por coluna, alinhamento numérico à direita e
+empty state. É um Client Component (TanStack usa hooks), recebendo `stats.topEvents`
+(já buscado no servidor) como prop:
+
+```typescript
+// apps/web/src/components/dashboard/events-table.tsx — 'use client'
+const table = useReactTable({
+  data,
+  columns,                       // ColumnDef<EventRow>[] (header clicável → toggleSorting)
+  state: { sorting },
+  onSortingChange: setSorting,
+  getCoreRowModel: getCoreRowModel(),
+  getSortedRowModel: getSortedRowModel(),  // ordenação client-side
+});
+// render: <Table> + flexRender(header/cell) + empty state quando rows.length === 0
+```
+
+E na página, a tabela crua vira uma linha só:
+
+```typescript
+import { EventsTable } from '@/components/dashboard/events-table';
+// ...
+<EventsTable data={stats.topEvents} />
+```
+
+> **Por que TanStack + shadcn Table** (e não um `<table>` cru): a ordenação/paginação/
+> filtro vêm prontos e desacoplados da renderização (headless), e a aparência usa os
+> mesmos componentes shadcn do resto do app. O `Table` do shadcn é Base UI; o TanStack
+> não traz UI, então não há conflito de stack.
+
+---
+
 ## Testando na prática
+
+> **Guia completo:** ver [docs/guia-de-testes.md — Fluxo 3](guia-de-testes.md#6-fluxo-3--painel-do-organizador-dashboard).
+> Inclui passo a passo com comandos curl para criar evento, lotes e publicar.
 
 O dashboard de organizador é a visão de admin do produto. Você vai verificar as métricas de vendas, o gráfico e o export CSV.
 
