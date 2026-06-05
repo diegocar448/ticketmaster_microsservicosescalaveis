@@ -1,0 +1,117 @@
+# infra/grafana/provisioning/alerting/showpass-alerts.yaml
+# Alertas críticos do ShowPass provisionados no boot do Grafana.
+#
+# Schema do unified alerting exige, por grupo: `folder` (pasta onde as regras vivem)
+# e, por regra: uma query (datasourceUid real) + um stage de threshold no datasource
+# de expressão `__expr__`. Por isso a comparação (> 100, > 1000, < 2) NÃO fica no PromQL:
+# ela vira um evaluator no stage C, que é o `condition` final da regra.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: showpass-critical
+    folder: ShowPass
+    interval: 1m
+    rules:
+      # Alerta: muitos conflitos de reserva (possível ataque ou bug)
+      - uid: reservation-conflicts-high
+        title: "Alto número de conflitos de reserva"
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: rate(showpass_reservations_conflicts_total[5m])
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [100]
+        annotations:
+          summary: "Taxa de conflitos de reserva alta: {{ $values.A }} conflitos/s"
+          runbook: "https://wiki.showpass.com.br/runbooks/booking-conflicts"
+        labels:
+          severity: warning
+          team: platform
+
+      # Alerta: alta latência de reserva (P95 > 1s)
+      - uid: reservation-latency-high
+        title: "Latência de reserva alta (P95 > 1s)"
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: |
+                histogram_quantile(0.95,
+                  rate(showpass_reservations_duration_milliseconds_bucket[5m]))
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [1000]
+        annotations:
+          summary: "P95 latência de reserva: {{ $values.A }}ms"
+        labels:
+          severity: critical
+          team: platform
+          pagerduty: "true"  # acionar PagerDuty em horário de pico
+
+      # Alerta: booking-service com menos de 2 pods (abaixo do mínimo)
+      - uid: booking-pods-low
+        title: "Booking Service com poucos pods"
+        condition: C
+        for: 2m
+        noDataState: NoData
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: kube_deployment_status_replicas_available{deployment="booking-service"}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [2]
+        annotations:
+          summary: "Booking Service com {{ $values.A }} pods disponíveis (mínimo: 2)"
+        labels:
+          severity: critical
+          team: platform

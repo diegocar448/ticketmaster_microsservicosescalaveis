@@ -1,0 +1,16 @@
+# infra/grafana/provisioning/dashboards/dashboards.yaml
+# Provider que varre /var/lib/grafana/dashboards e importa todo JSON encontrado
+# (o docker-compose monta ./infra/grafana/dashboards nesse caminho).
+apiVersion: 1
+
+providers:
+  - name: showpass
+    orgId: 1
+    folder: ShowPass
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

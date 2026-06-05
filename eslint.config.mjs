@@ -39,12 +39,16 @@ export default tseslint.config(
     },
   },
   {
-    // Ignorar arquivos gerados automaticamente
+    // Ignorar arquivos gerados/vendored automaticamente
     ignores: [
       '**/dist/**',
       '**/.next/**',
       '**/node_modules/**',
       '**/prisma/generated/**',
+      // Componentes vendored pelo shadcn CLI (não seguem o style guide do projeto;
+      // são regenerados via `shadcn add`). Mesmo tratamento de código gerado.
+      '**/components/ui/**',
+      '**/hooks/use-mobile.ts',
     ],
   },
 );

@@ -29,7 +29,7 @@
   "exports": {
     ".": {
       "types": "./src/index.ts",
-      "development": "./src/index.ts",
+      "showpass-dev": "./src/index.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     }

@@ -7,6 +7,7 @@
 import { Module } from '@nestjs/common';
 import { RedisModule } from '@showpass/redis';
 import { KafkaModule } from '@showpass/kafka';
+import { MetricsModule } from './common/metrics/metrics.module.js';
 import { ReservationsModule } from './modules/reservations/reservations.module.js';
 import { TicketBatchesModule } from './modules/ticket-batches/ticket-batches.module.js';
 import { EventsModule } from './modules/events/events.module.js';
@@ -31,6 +32,8 @@ import { HealthModule } from './modules/health/health.module.js';
       brokers: (process.env['KAFKA_BROKERS'] ?? 'localhost:29092').split(','),
       groupId: process.env['KAFKA_GROUP_ID'] ?? 'booking-service-group',
     }),
+    // Métricas de negócio (OpenTelemetry) — global, injetável no ReservationsService
+    MetricsModule,
     HealthModule,
     ReservationsModule,
     // Consumer Kafka: mantém réplica local de TicketBatch atualizada

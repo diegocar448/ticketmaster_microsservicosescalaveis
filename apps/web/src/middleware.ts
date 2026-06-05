@@ -62,14 +62,18 @@ export async function middleware(
       });
 
       const dest = request.nextUrl.clone();
-      // Organizer → /dashboard   |   buyer → /   (buyer fica na home; só
-      // organizer tem painel. Se buyer tentar /login, deixamos passar —
-      // ele pode querer trocar de conta.)
+      // Organizer → /dashboard  |  buyer → / (landing com eventos públicos)
+      // Ambos já estão logados — não precisam ver o formulário de login de novo.
       if (payload['type'] === 'organizer') {
         dest.pathname = '/dashboard';
         return NextResponse.redirect(dest);
       }
-      // buyer logado na home: deixar ver a landing (eventos públicos estão lá)
+      // Buyer logado tentando acessar /login → home (já está autenticado)
+      // Buyer logado tentando acessar / → deixar passar (é a própria home)
+      if (pathname === '/login') {
+        dest.pathname = '/';
+        return NextResponse.redirect(dest);
+      }
       return NextResponse.next();
     } catch {
       // Token inválido/expirado: deixar ver a rota pública normalmente

@@ -1,9 +1,177 @@
 @import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
 
+/* Dark mode por classe (Tailwind v4). O <html> ganha `.dark` via ThemeToggle. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ─── Paleta Horizon UI (free) como tokens utilitários ────────────────────────
+   Permite bg-brand-500, text-navy-700, shadow-card etc. */
+@theme {
+  --color-brand-50: #e9e3ff;
+  --color-brand-100: #c0b8fe;
+  --color-brand-200: #a195fd;
+  --color-brand-300: #8171fc;
+  --color-brand-400: #7551ff;
+  --color-brand-500: #422afb;
+  --color-brand-600: #3311db;
+  --color-brand-700: #2111a5;
+  --color-brand-800: #190793;
+  --color-brand-900: #11047a;
+
+  --color-navy-50: #d0dcfb;
+  --color-navy-100: #aac0fe;
+  --color-navy-300: #728fea;
+  --color-navy-500: #1b3bbb;
+  --color-navy-700: #1b254b;
+  --color-navy-800: #111c44;
+  --color-navy-900: #0b1437;
+
+  /* Sombra suave característica do Horizon */
+  --shadow-card: 14px 17px 40px 4px rgba(112, 144, 176, 0.18);
+  --shadow-card-dark: 0px 18px 40px rgba(0, 0, 0, 0.12);
+}
+
+/* ─── Tokens semânticos shadcn remapeados para o Horizon ──────────────────── */
 :root {
+  --background: #f4f7fe; /* lightPrimary */
+  --foreground: #1b254b; /* navy.700 */
+  --card: #ffffff;
+  --card-foreground: #1b254b;
+  --popover: #ffffff;
+  --popover-foreground: #1b254b;
+  --primary: #422afb; /* brand.500 */
+  --primary-foreground: #ffffff;
+  --secondary: #f4f7fe;
+  --secondary-foreground: #1b254b;
+  --muted: #f4f7fe;
+  --muted-foreground: #707eae; /* gray.700 — texto secundário */
+  --accent: #eef2ff;
+  --accent-foreground: #422afb;
+  --destructive: #ee5d50;
+  --border: #e9edf7;
+  --input: #e9edf7;
+  --ring: #422afb;
+  --chart-1: #422afb;
+  --chart-2: #7551ff;
+  --chart-3: #39b8ff;
+  --chart-4: #05cd99;
+  --chart-5: #ffb547;
+  --radius: 1rem;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #1b254b;
+  --sidebar-primary: #422afb;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f4f7fe;
+  --sidebar-accent-foreground: #422afb;
+  --sidebar-border: #e9edf7;
+  --sidebar-ring: #422afb;
   color-scheme: light;
+}
+
+.dark {
+  --background: #0b1437; /* navy.900 */
+  --foreground: #ffffff;
+  --card: #111c44; /* navy.800 */
+  --card-foreground: #ffffff;
+  --popover: #111c44;
+  --popover-foreground: #ffffff;
+  --primary: #7551ff; /* brand.400 (mais claro no escuro) */
+  --primary-foreground: #ffffff;
+  --secondary: #1b254b; /* navy.700 */
+  --secondary-foreground: #ffffff;
+  --muted: #1b254b;
+  --muted-foreground: #a3aed0; /* gray.600 */
+  --accent: #1b254b;
+  --accent-foreground: #ffffff;
+  --destructive: #ee5d50;
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.1);
+  --ring: #7551ff;
+  --chart-1: #7551ff;
+  --chart-2: #422afb;
+  --chart-3: #39b8ff;
+  --chart-4: #05cd99;
+  --chart-5: #ffb547;
+  --sidebar: #111c44;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #7551ff;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1b254b;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+  --sidebar-ring: #7551ff;
+  color-scheme: dark;
 }
 
 body {
   margin: 0;
+}
+
+/* Glow radial rotativo do card de login "Neural Access" (tela /login). */
+@keyframes neural-glow {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(180deg) scale(1.12);
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+  }
+}
+
+/* @theme inline: mapeia os tokens semânticos para utilities (bg-background, etc.) */
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
 }

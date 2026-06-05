@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service.js';
 import type { Prisma } from '../../prisma/generated/index.js';
 import { SeatLockService } from '../locks/seat-lock.service.js';
+import { BusinessMetricsService } from '../../common/metrics/business-metrics.service.js';
 import { KafkaProducerService } from '@showpass/kafka';
 import { KAFKA_TOPICS } from '@showpass/types';
 import type { CreateReservationDto } from '@showpass/types';
@@ -29,6 +30,7 @@ export class ReservationsService {
     private readonly prisma: PrismaService,
     private readonly seatLock: SeatLockService,
     private readonly kafka: KafkaProducerService,
+    private readonly metrics: BusinessMetricsService,
   ) {}
 
   /**
@@ -46,114 +48,141 @@ export class ReservationsService {
     buyerId: string,
     dto: CreateReservationDto,
   ): Promise<ReservationWithItems> {
-    // ─── 1. Verificar status do evento ────────────────────────────────────────
-    // Buscar dados do evento via HTTP para o event-service
-    // (em produção: HTTP com cache curto de 30s para não sobrecarregar)
-    const eventData = await this.fetchEventData(dto.eventId);
-
-    if (eventData.status !== 'on_sale') {
-      throw new BadRequestException(
-        `Evento não está em venda. Status atual: ${eventData.status}`,
-      );
-    }
-
-    // ─── 2. Preparar itens com preços snapshot ─────────────────────────────────
-    const items = await this.prepareItems(dto.items);
-
-    // ─── 3. Coletar seatIds para bloquear ─────────────────────────────────────
-    const seatIdsToLock = items
-      .filter((item) => item.seatId !== null)
-      .map((item) => item.seatId as string);
-
-    let locksAcquired = false;
+    // Cronômetro da reserva — alimenta o histograma de latência (P95 no Grafana).
+    // success começa false: só vira true quando a reserva é persistida e emitida.
+    const startedAt = Date.now();
+    let success = false;
 
     try {
-      // ─── 4. Adquirir locks — ALL OR NOTHING ────────────────────────────────
-      if (seatIdsToLock.length > 0) {
-        const lockResult = await this.seatLock.acquireMultiple(
-          dto.eventId,
-          seatIdsToLock,
-          buyerId,
-        );
+      // ─── 1. Verificar status do evento ──────────────────────────────────────
+      // Buscar dados do evento via HTTP para o event-service
+      // (em produção: HTTP com cache curto de 30s para não sobrecarregar)
+      const eventData = await this.fetchEventData(dto.eventId);
 
-        if (!lockResult.success) {
-          throw new ConflictException({
-            message: 'Um ou mais assentos não estão disponíveis',
-            unavailableSeatIds: lockResult.unavailableSeatIds,
-          });
-        }
+      if (eventData.status !== 'on_sale') {
+        throw new BadRequestException(
+          `Evento não está em venda. Status atual: ${eventData.status}`,
+        );
       }
 
-      locksAcquired = true;
+      // ─── 2. Preparar itens com preços snapshot ──────────────────────────────
+      const items = await this.prepareItems(dto.items);
 
-      // ─── 5. Persistir no banco (transação) ────────────────────────────────
-      const expiresAt = new Date(Date.now() + RESERVATION_TTL_MINUTES * 60 * 1000);
+      // ─── 3. Coletar seatIds para bloquear ───────────────────────────────────
+      const seatIdsToLock = items
+        .filter((item) => item.seatId !== null)
+        .map((item) => item.seatId as string);
 
-      const reservation = await this.prisma.$transaction(async (tx) => {
-        const reservation = await tx.reservation.create({
-          data: {
+      let locksAcquired = false;
+
+      try {
+        // ─── 4. Adquirir locks — ALL OR NOTHING ──────────────────────────────
+        if (seatIdsToLock.length > 0) {
+          const lockResult = await this.seatLock.acquireMultiple(
+            dto.eventId,
+            seatIdsToLock,
             buyerId,
-            eventId: dto.eventId,
-            organizerId: eventData.organizerId,
-            status: 'pending',
-            expiresAt,
-            items: {
-              create: items.map((item) => ({
-                ticketBatchId: item.ticketBatchId,
-                seatId: item.seatId,
-                unitPrice: item.unitPrice,
-                quantity: item.quantity,
-              })),
-            },
-          },
-          include: { items: true },
-        });
+          );
 
-        // Incrementar contador de reservados no lote
-        for (const item of items) {
-          await tx.ticketBatch.updateMany({
-            where: { id: item.ticketBatchId },
-            data: { reservedCount: { increment: item.quantity } },
-          });
+          if (!lockResult.success) {
+            // Conflito de lock = tentativa de double booking. Esta métrica é o
+            // sinal de ataque/pico: rate alto dispara o alerta no Grafana.
+            this.metrics.recordReservationConflict(
+              dto.eventId,
+              lockResult.unavailableSeatIds.length,
+            );
+            throw new ConflictException({
+              message: 'Um ou mais assentos não estão disponíveis',
+              unavailableSeatIds: lockResult.unavailableSeatIds,
+            });
+          }
         }
 
-        return reservation;
-      });
+        locksAcquired = true;
 
-      // ─── 6. Emitir evento de domínio ──────────────────────────────────────
-      await this.kafka.emit(
-        KAFKA_TOPICS.RESERVATION_CREATED,
-        {
+        // ─── 5. Persistir no banco (transação) ───────────────────────────────
+        const expiresAt = new Date(
+          Date.now() + RESERVATION_TTL_MINUTES * 60 * 1000,
+        );
+
+        const reservation = await this.prisma.$transaction(async (tx) => {
+          const reservation = await tx.reservation.create({
+            data: {
+              buyerId,
+              eventId: dto.eventId,
+              organizerId: eventData.organizerId,
+              status: 'pending',
+              expiresAt,
+              items: {
+                create: items.map((item) => ({
+                  ticketBatchId: item.ticketBatchId,
+                  seatId: item.seatId,
+                  unitPrice: item.unitPrice,
+                  quantity: item.quantity,
+                })),
+              },
+            },
+            include: { items: true },
+          });
+
+          // Incrementar contador de reservados no lote
+          for (const item of items) {
+            await tx.ticketBatch.updateMany({
+              where: { id: item.ticketBatchId },
+              data: { reservedCount: { increment: item.quantity } },
+            });
+          }
+
+          return reservation;
+        });
+
+        // ─── 6. Emitir evento de domínio ─────────────────────────────────────
+        await this.kafka.emit(
+          KAFKA_TOPICS.RESERVATION_CREATED,
+          {
+            reservationId: reservation.id,
+            buyerId,
+            eventId: dto.eventId,
+            expiresAt,
+            items: items.map((i) => ({
+              ticketBatchId: i.ticketBatchId,
+              seatId: i.seatId,
+              quantity: i.quantity,
+            })),
+          },
+          reservation.id,
+        );
+
+        this.logger.log('Reserva criada', {
           reservationId: reservation.id,
           buyerId,
           eventId: dto.eventId,
-          expiresAt,
-          items: items.map((i) => ({
-            ticketBatchId: i.ticketBatchId,
-            seatId: i.seatId,
-            quantity: i.quantity,
-          })),
-        },
-        reservation.id,
-      );
+          seatCount: seatIdsToLock.length,
+        });
 
-      this.logger.log('Reserva criada', {
-        reservationId: reservation.id,
-        buyerId,
-        eventId: dto.eventId,
-        seatCount: seatIdsToLock.length,
-      });
+        // Reserva confirmada — contabilizar e marcar sucesso (afeta a label do
+        // histograma de duração no finally).
+        this.metrics.recordReservationCreated(dto.eventId);
+        success = true;
 
-      return reservation;
+        return reservation;
+      } catch (error) {
+        // ─── COMPENSAÇÃO: liberar locks se banco falhou ──────────────────────
+        if (locksAcquired && seatIdsToLock.length > 0) {
+          await this.seatLock.releaseMultiple(
+            dto.eventId,
+            seatIdsToLock,
+            buyerId,
+          );
+          this.logger.warn('Locks liberados após falha no banco', { buyerId });
+        }
 
-    } catch (error) {
-      // ─── COMPENSAÇÃO: liberar locks se banco falhou ────────────────────────
-      if (locksAcquired && seatIdsToLock.length > 0) {
-        await this.seatLock.releaseMultiple(dto.eventId, seatIdsToLock, buyerId);
-        this.logger.warn('Locks liberados após falha no banco', { buyerId });
+        throw error;
       }
-
-      throw error;
+    } finally {
+      // Registrar a latência em TODO caminho (sucesso, conflito ou erro):
+      // o label success=true/false separa as curvas no dashboard.
+      this.metrics.recordReservationDuration(Date.now() - startedAt, success);
     }
   }
 

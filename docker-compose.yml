@@ -277,6 +277,72 @@ services:
       postgres:
         condition: service_healthy
 
+  otel-collector:
+    profiles: ["observability"]
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4318:4318"  # OTLP HTTP
+    networks:
+      - private        # recebe OTLP dos serviços rodando em container
+      - observability  # exporta p/ tempo e expõe :8889 ao prometheus; publica 4318 ao host
+
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:v3.1.0
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - observability
+
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning
+    ports:
+      - "3002:3000"  # http://localhost:3002
+    networks:
+      - observability
+
+  loki:
+    profiles: ["observability"]
+    image: grafana/loki:3.3.2
+    command: -config.file=/etc/loki/config.yaml
+    volumes:
+      - ./infra/loki/config.yaml:/etc/loki/config.yaml
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - observability
+
+  tempo:
+    profiles: ["observability"]
+    image: grafana/tempo:2.7.1
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    volumes:
+      - ./infra/tempo/config.yaml:/etc/tempo/config.yaml
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"  # query API
+      - "4317:4317"  # OTLP gRPC
+    networks:
+      - observability
+
   web:
     build:
       context: .
@@ -285,7 +351,10 @@ services:
     restart: unless-stopped
     env_file: apps/web/.env
     ports:
-      - "3000:3000"
+      # Web na 3001 (NEXTAUTH_URL espera :3001); a 3000 é do api-gateway.
+      # Antes ambos mapeavam 3000 → conflito: o web ocupava a porta e o
+      # gateway ficava inacessível pelo host, quebrando login/checkout.
+      - "3001:3001"
     volumes:
       - ./apps/web/src:/app/apps/web/src
     networks:
@@ -304,8 +373,18 @@ networks:
   data:
     # Bancos, Redis, Kafka — nunca acessíveis externamente
     internal: true
+  observability:
+    # Stack de observability (profile observability).
+    # NÃO é `internal`: o dev precisa acessar Grafana/Prometheus/etc. pelo host.
+    # Publish de porta (ex.: 3002:3000) só funciona em rede com saída externa —
+    # em rede `internal: true` o bind é declarado mas nunca ativado.
 
 volumes:
   postgres_data:
   elasticsearch_data:
   kafka_data:
+  # Observability (profile observability)
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  tempo_data:

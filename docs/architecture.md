@@ -33,7 +33,7 @@ Usuário → Cloudflare Waiting Room (lotes de 100)
 | payment-service | 3002 | Stripe, webhooks, orders |
 | search-service | 3005 | Elasticsearch, CDC consumer |
 | worker-service | — | Kafka consumer, QR, PDF, e-mail |
-| web (Next.js) | 3000 | Frontend |
+| web (Next.js) | 3001 | Frontend (3000 é do api-gateway) |
 
 ## Regras de comunicação entre serviços
 

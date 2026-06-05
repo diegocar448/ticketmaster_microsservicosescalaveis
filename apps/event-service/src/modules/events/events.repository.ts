@@ -136,6 +136,15 @@ export class EventsRepository {
     });
   }
 
+  /** Checagem leve de existência de slug (só o id) — usado na geração de slug único. */
+  async slugExists(slug: string): Promise<boolean> {
+    const found = await this.prisma.event.findUnique({
+      where: { slug },
+      select: { id: true },
+    });
+    return found !== null;
+  }
+
   async listByOrganizer(
     organizerId: string,
     params: { status?: EventStatus; page: number; limit: number },
@@ -157,6 +166,29 @@ export class EventsRepository {
       this.prisma.event.count({
         where: { organizerId, ...statusFilter },
       }),
+    ]);
+
+    return { items, total, page: params.page, limit: params.limit };
+  }
+
+  /** Lista eventos públicos (on_sale) para compradores — sem filtro de tenant. */
+  async listPublic(
+    params: { page: number; limit: number },
+  ): Promise<EventList> {
+    const skip = (params.page - 1) * params.limit;
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.event.findMany({
+        where: { status: 'on_sale' },
+        orderBy: { startAt: 'asc' },
+        skip,
+        take: params.limit,
+        include: {
+          venue: { select: { name: true, city: true } },
+          _count: { select: { ticketBatches: true } },
+        },
+      }),
+      this.prisma.event.count({ where: { status: 'on_sale' } }),
     ]);
 
     return { items, total, page: params.page, limit: params.limit };

@@ -4,15 +4,24 @@
 // ATENÇÃO: ver apps/booking-service/CLAUDE.md antes de qualquer alteração.
 
 import 'dotenv/config';
+// Instrumentação OpenTelemetry — DEPOIS do dotenv (precisa de OTEL_* no env),
+// ANTES de qualquer import do Nest/http para a auto-instrumentação patchear cedo.
+import './instrumentation.js';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { Transport } from '@nestjs/microservices';
 import type { MicroserviceOptions } from '@nestjs/microservices';
 import { AppModule } from './app.module.js';
 import { Logger } from '@nestjs/common';
+import { OtelLogger } from './common/logging/otel-logger.service.js';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+
+  // Substituir o logger padrão pelo OtelLogger: mantém o console e envia cada
+  // log como OTLP → Collector → Loki. bufferLogs garante que os logs de
+  // bootstrap também passem por ele.
+  app.useLogger(new OtelLogger());
 
   // ─── Kafka consumer (hybrid app) ────────────────────────────────────────────
   // Além de servir HTTP, o booking-service consome eventos do event-service

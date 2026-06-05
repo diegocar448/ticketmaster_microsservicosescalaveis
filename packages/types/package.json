@@ -7,13 +7,13 @@
   "exports": {
     ".": {
       "types": "./src/index.ts",
-      "development": "./src/index.ts",
+      "showpass-dev": "./src/index.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
     "./nest": {
       "types": "./src/decorators/current-user.decorator.ts",
-      "development": "./src/decorators/current-user.decorator.ts",
+      "showpass-dev": "./src/decorators/current-user.decorator.ts",
       "require": "./dist/decorators/current-user.decorator.js",
       "import": "./dist/decorators/current-user.decorator.js",
       "default": "./dist/decorators/current-user.decorator.js"

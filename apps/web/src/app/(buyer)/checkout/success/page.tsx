@@ -35,11 +35,9 @@ export default async function CheckoutSuccessPage({
       </p>
 
       <div className="flex flex-col gap-3">
-        <Button asChild>
-          <Link href="/my-tickets">Ver meus ingressos</Link>
-        </Button>
-        <Button variant="outline" asChild>
-          <Link href="/">Explorar mais eventos</Link>
+        <Button render={<Link href="/my-tickets" />}>Ver meus ingressos</Button>
+        <Button variant="outline" render={<Link href="/" />}>
+          Explorar mais eventos
         </Button>
       </div>
     </div>
