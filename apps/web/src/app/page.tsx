@@ -11,7 +11,6 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { Sparkles } from 'lucide-react';
 import { HomeEntrarButton } from '@/components/home-entrar-button';
-import { HomeVerEventosButton } from '@/components/home-ver-eventos-button';
 
 // Nós neurais (pontos animados no fundo)
 const nodes = [
@@ -34,21 +33,23 @@ export default async function HomePage(): Promise<React.JSX.Element> {
 
   // Decodificar o payload do JWT sem verificar assinatura (só para saber o tipo).
   // Segurança: a verificação criptográfica já foi feita no middleware Edge.
-  let isBuyer = false;
   if (token) {
     try {
+      // split('.')[1] pode ser undefined em token malformado — usar ?? '' como fallback seguro.
+      const part = token.split('.')[1] ?? '';
       const payload = JSON.parse(
-        Buffer.from(token.split('.')[1]!, 'base64url').toString(),
+        Buffer.from(part, 'base64url').toString(),
       ) as { type?: string };
-      isBuyer = payload.type === 'buyer';
+
+      // Buyer autenticado não precisa ver a landing — redirecionar direto para eventos.
+      // O middleware já garante que organizers vão para /dashboard.
+      // redirect() lança uma exceção interna do Next — deve ficar dentro do try para
+      // não ser engolida pelo catch abaixo.
+      if (payload.type === 'buyer') redirect('/events');
     } catch {
-      // token malformado — ignorar, mostrar CTA padrão
+      // token malformado ou redirect() — ignorar, mostrar CTA padrão
     }
   }
-
-  // Buyer autenticado não precisa ver a landing — redirecionar direto para eventos.
-  // O middleware já garante que organizers vão para /dashboard.
-  if (isBuyer) redirect('/events');
 
   return (
     <main className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-[#0a0a0f] px-6 text-center">
@@ -93,8 +94,8 @@ export default async function HomePage(): Promise<React.JSX.Element> {
           Ingressos para shows, teatro, esportes e muito mais.
         </p>
 
-        {/* Buyer logado → botão "Ver Eventos"; visitante → botão "Entrar" */}
-        {isBuyer ? <HomeVerEventosButton /> : <HomeEntrarButton />}
+        {/* Visitante (buyer seria redirecionado antes de chegar aqui) */}
+        <HomeEntrarButton />
       </div>
     </main>
   );

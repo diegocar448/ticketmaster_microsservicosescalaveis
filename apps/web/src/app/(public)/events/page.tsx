@@ -46,7 +46,9 @@ export default async function EventsPage(): Promise<React.JSX.Element> {
             Eventos
           </h1>
           <p className="mt-3 text-slate-400">
-            {total > 0 ? `${total} evento${total !== 1 ? 's' : ''} disponível${total !== 1 ? 'is' : ''}` : 'Nenhum evento disponível no momento'}
+            {total > 0
+              ? `${String(total)} evento${total !== 1 ? 's' : ''} disponível${total !== 1 ? 'is' : ''}`
+              : 'Nenhum evento disponível no momento'}
           </p>
         </div>
 
