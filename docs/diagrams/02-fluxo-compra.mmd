@@ -1,0 +1,60 @@
+sequenceDiagram
+    actor Buyer as Comprador
+    participant GW   as API Gateway
+    participant BOOK as Booking Service
+    participant REDIS as Redis
+    participant GRPC as Event Service (gRPC)
+    participant KAFKA as Kafka
+    participant PAY  as Payment Service
+    participant STRIPE as Stripe
+    participant SAGA as Booking Saga
+    participant WORK as Worker Service
+
+    Note over Buyer,WORK: 1 - Reserva (lock atomico no Redis)
+
+    Buyer->>GW: POST /bookings/reservations<br/>{ eventId, items }
+    GW->>BOOK: proxy + x-user-id / x-user-type
+    BOOK->>GRPC: GetEvent(eventId) via gRPC + Circuit Breaker
+    GRPC-->>BOOK: { status: on_sale, maxTicketsPerOrder: 4 }
+    BOOK->>REDIS: SETNX seat:lock TTL=420s
+    REDIS-->>BOOK: 1 (lock adquirido)
+    BOOK->>BOOK: INSERT reservation (status=pending)
+    BOOK->>KAFKA: bookings.reservation-created
+    BOOK-->>GW: 201 { id, status: pending, expiresAt }
+    GW-->>Buyer: 201 Reserva criada
+
+    Note over Buyer,WORK: 2 - Checkout (sessao Stripe gerada)
+
+    Buyer->>GW: POST /payments/orders<br/>{ reservationIds }
+    GW->>PAY: proxy
+    PAY->>GW: GET /bookings/reservations/:id<br/>(valida posse - OWASP A01)
+    GW-->>PAY: reservation + items enriquecidos
+    PAY->>STRIPE: createCheckoutSession(lineItems, metadata)
+    STRIPE-->>PAY: { url: checkout.stripe.com/cs_test }
+    PAY->>PAY: INSERT order (status=pending)
+    PAY-->>Buyer: { checkoutUrl, orderId }
+
+    Note over Buyer,WORK: 3 - Pagamento (webhook HMAC-SHA256)
+
+    Buyer->>STRIPE: Paga (4242 4242 4242 4242)
+    STRIPE-->>PAY: POST /webhooks/stripe<br/>checkout.session.completed + HMAC
+    PAY->>PAY: constructEvent() valida HMAC
+    PAY->>PAY: UPDATE order SET status=paid
+    PAY->>KAFKA: payments.payment-confirmed
+    PAY-->>STRIPE: 200 OK
+
+    Note over Buyer,WORK: 4 - Saga Choreography (cap-18)
+
+    KAFKA-->>SAGA: payments.payment-confirmed consumed
+    SAGA->>BOOK: UPDATE reservation SET status=confirmed<br/>(idempotente)
+
+    Note over Buyer,WORK: 5 - Worker (ingresso gerado async)
+
+    KAFKA-->>WORK: payments.payment-confirmed consumed
+    WORK->>WORK: Gera QR Code (HMAC-SHA256 do ticketId)
+    WORK->>WORK: Gera PDF (Puppeteer)
+    WORK->>WORK: Upload PDF para Storage S3
+    WORK->>BOOK: INSERT ticket (status=issued, pdfUrl)
+    WORK->>KAFKA: workers.ticket-issued
+
+    Note over Buyer,WORK: Compra concluida - ingresso disponivel
