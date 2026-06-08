@@ -17,14 +17,19 @@
 5. [Fluxo 2 — Cadastro e login como Organizer](#5-fluxo-2--cadastro-e-login-como-organizer)
 6. [Fluxo 3 — Painel do Organizador (dashboard)](#6-fluxo-3--painel-do-organizador-dashboard)
 7. [Fluxo 4 — Cadastro e login como Comprador](#7-fluxo-4--cadastro-e-login-como-comprador)
-8. [Fluxo 5 — Proteção de rotas e auto-redirect](#8-fluxo-5--proteção-de-rotas-e-auto-redirect)
-9. [Fluxo 6 — Loading spinner (comportamento padrão)](#9-fluxo-6--loading-spinner-comportamento-padrão)
-10. [Fluxo 7 — Tema dark/light](#10-fluxo-7--tema-darklight)
-11. [Fluxo 8 — Logout correto (sem 401/404 no Network)](#11-fluxo-8--logout-correto-sem-401404-no-network)
-12. [Fluxo 9 — Observabilidade (métricas + traces + logs)](#12-fluxo-9--observabilidade-métricas--traces--logs)
-13. [Testes automatizados (CI local)](#13-testes-automatizados-ci-local)
-14. [Portas e URLs de referência](#14-portas-e-urls-de-referência)
-15. [Troubleshooting](#troubleshooting)
+8. [Fluxo 5 — Comprador busca eventos disponíveis](#8-fluxo-5--comprador-busca-eventos-disponíveis)
+9. [Fluxo 6 — Comprador reserva ingressos](#9-fluxo-6--comprador-reserva-ingressos)
+10. [Fluxo 7 — Checkout com Stripe](#10-fluxo-7--checkout-com-stripe)
+11. [Fluxo 8 — Worker gera o ingresso](#11-fluxo-8--worker-gera-o-ingresso)
+12. [Fluxo 9 — Organizador confere as vendas](#12-fluxo-9--organizador-confere-as-vendas)
+13. [Fluxo 10 — Proteção de rotas e auto-redirect](#13-fluxo-10--proteção-de-rotas-e-auto-redirect)
+14. [Fluxo 11 — Loading spinner (comportamento padrão)](#14-fluxo-11--loading-spinner-comportamento-padrão)
+15. [Fluxo 12 — Tema dark/light](#15-fluxo-12--tema-darklight)
+16. [Fluxo 13 — Logout correto (sem 401/404 no Network)](#16-fluxo-13--logout-correto-sem-401404-no-network)
+17. [Fluxo 14 — Observabilidade (métricas + traces + logs)](#17-fluxo-14--observabilidade-métricas--traces--logs)
+18. [Testes automatizados (CI local)](#18-testes-automatizados-ci-local)
+19. [Portas e URLs de referência](#19-portas-e-urls-de-referência)
+20. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -330,7 +335,316 @@ curl -s -X POST http://localhost:3000/auth/buyers/register \
 
 ---
 
-## 8. Fluxo 5 — Proteção de rotas e auto-redirect
+## 8. Fluxo 5 — Comprador busca eventos disponíveis
+
+> **Pré-requisito:** o organizador criou e publicou um evento com status `on_sale`
+> (Fluxo 3). Se ainda não fez, execute a seção [Criar um evento via API](#criar-um-evento-via-api) antes de continuar.
+
+### 8.1 Listar eventos via API
+
+```bash
+# Eventos públicos — não requer autenticação
+curl -s "http://localhost:3003/events?status=on_sale" | python3 -m json.tool | head -60
+```
+
+Resposta esperada (array com pelo menos um evento):
+
+```json
+[
+  {
+    "id": "a644d8e5-...",
+    "title": "ShowPass Festival 2026",
+    "status": "on_sale",
+    "startAt": "2026-09-15T20:00:00.000Z",
+    "venue": { "name": "Arena ShowPass", "city": "São Paulo" }
+  }
+]
+```
+
+### 8.2 Ver detalhes e lotes de ingressos
+
+```bash
+# Guardar o id do evento retornado acima
+EVENT_ID="cole-aqui-o-uuid-do-evento"
+
+# Detalhes públicos do evento
+curl -s "http://localhost:3003/events/$EVENT_ID/public" | python3 -m json.tool
+
+# Lotes disponíveis (preço + quantidade restante)
+curl -s "http://localhost:3003/events/$EVENT_ID/ticket-batches/available" \
+  | python3 -m json.tool
+```
+
+Anotar o `id` do lote que aparece na resposta — será o `ticketBatchId` na reserva.
+
+### 8.3 Pela UI
+
+1. Acesse `http://localhost:3001` logado como comprador
+2. Clique no card do evento "ShowPass Festival 2026"
+3. A página de evento deve mostrar: título, data, venue e os lotes com botão "Comprar"
+
+---
+
+## 9. Fluxo 6 — Comprador reserva ingressos
+
+> **Pré-requisito:** estar logado como buyer e ter o `EVENT_ID` e `BATCH_ID` do fluxo anterior.
+
+```bash
+# Login como buyer e capturar token
+BUYER_TOKEN=$(curl -s -X POST http://localhost:3000/auth/buyers/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"buyer@showpass.com","password":"Senha@12345"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['accessToken'])")
+
+# Criar reserva (via API Gateway — porta 3000)
+RESERVATION=$(curl -s -X POST http://localhost:3000/bookings/reservations \
+  -H "Authorization: Bearer $BUYER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"eventId\": \"$EVENT_ID\",
+    \"items\": [
+      { \"ticketBatchId\": \"$BATCH_ID\", \"seatId\": null, \"quantity\": 2 }
+    ]
+  }")
+
+echo $RESERVATION | python3 -m json.tool
+RESERVATION_ID=$(echo $RESERVATION | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "RESERVATION_ID=$RESERVATION_ID"
+```
+
+Resposta esperada:
+
+```json
+{
+  "id": "f1e2d3c4-...",
+  "status": "pending",
+  "expiresAt": "2026-06-08T10:17:00.000Z",
+  "items": [
+    { "ticketBatchId": "...", "quantity": 2, "unitPrice": "150.00" }
+  ]
+}
+```
+
+> **O que acontece por baixo:**
+> - `SeatLockService.acquireMultiple()` executa SETNX atômico no Redis
+> - A reserva fica `pending` com TTL de **7 minutos**
+> - Se o checkout não for concluído no prazo, o cron job expira a reserva e libera os locks
+
+**Verificar o lock no Redis:**
+
+```bash
+docker compose exec redis redis-cli -a redis_dev_secret \
+  KEYS "seat:lock:$EVENT_ID:*"
+# Retorna as chaves dos assentos reservados (vazio se lote sem assentos mapeados)
+```
+
+---
+
+## 10. Fluxo 7 — Checkout com Stripe
+
+> **Pré-requisitos:**
+> - payment-service rodando (`pnpm --filter @showpass/payment-service dev`)
+> - worker-service rodando (`pnpm --filter @showpass/worker-service dev`)
+> - Stripe CLI instalado e autenticado (`stripe login`)
+
+### 10.1 Redirecionar o webhook Stripe para o ambiente local
+
+Em um terminal dedicado:
+
+```bash
+stripe listen --forward-to localhost:3002/webhooks/stripe
+```
+
+O CLI exibe o webhook secret:
+
+```
+> Ready! Your webhook signing secret is whsec_abc123... (^C to quit)
+```
+
+Copie o `whsec_...` e confirme que está no `.env` do payment-service:
+
+```bash
+grep STRIPE_WEBHOOK_SECRET apps/payment-service/.env
+# STRIPE_WEBHOOK_SECRET=whsec_abc123...
+```
+
+### 10.2 Criar a sessão de checkout
+
+```bash
+ORDER=$(curl -s -X POST http://localhost:3000/payments/orders \
+  -H "Authorization: Bearer $BUYER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"reservationIds\": [\"$RESERVATION_ID\"]}")
+
+echo $ORDER | python3 -m json.tool
+CHECKOUT_URL=$(echo $ORDER | python3 -c "import sys,json; print(json.load(sys.stdin)['checkoutUrl'])")
+echo "Abrir no browser: $CHECKOUT_URL"
+```
+
+Resposta esperada:
+
+```json
+{
+  "orderId": "e5f6g7h8-...",
+  "checkoutUrl": "https://checkout.stripe.com/c/pay/cs_test_...",
+  "status": "pending"
+}
+```
+
+### 10.3 Pagar com cartão de teste
+
+1. Abra a `$CHECKOUT_URL` no browser
+2. Preencha com o **cartão de teste Stripe**:
+
+   | Campo | Valor |
+   |---|---|
+   | Número | `4242 4242 4242 4242` |
+   | Validade | `12/34` |
+   | CVC | `123` |
+   | Nome | qualquer |
+   | CEP | `12345` |
+
+3. Clique em **Pagar**
+
+### 10.4 Verificar o webhook recebido
+
+No terminal do `stripe listen`, você verá:
+
+```
+2026-06-08 10:15:30  --> payment_intent.created    [evt_...]
+2026-06-08 10:15:32  --> payment_intent.succeeded  [evt_...]
+2026-06-08 10:15:32  --> checkout.session.completed [evt_...] [200]
+```
+
+No terminal do payment-service:
+
+```
+[OrdersService] Checkout Stripe completo { orderId: 'e5f6g7h8-...', status: 'paid' }
+[KafkaProducerService] Publicado payments.payment-confirmed
+```
+
+No terminal do booking-service (Saga do cap-18):
+
+```
+[BookingSaga] Saga: pagamento confirmado, atualizando reservas { orderId: '...', itemCount: 1 }
+```
+
+**Verificar status da reserva no banco:**
+
+```bash
+docker compose exec postgres psql -U booking_svc -d showpass_booking \
+  -c "SELECT id, status FROM reservations WHERE id='$RESERVATION_ID';"
+# status: confirmed ✅
+```
+
+---
+
+## 11. Fluxo 8 — Worker gera o ingresso
+
+O `worker-service` consome `payments.payment-confirmed` e gera um ingresso PDF
+para cada item da reserva.
+
+### 11.1 Verificar o ingresso no banco
+
+```bash
+# O worker-service compartilha o banco showpass_booking
+docker compose exec postgres psql -U booking_svc -d showpass_booking \
+  -c "SELECT id, buyer_id, event_id, status, pdf_url, created_at
+      FROM tickets
+      WHERE reservation_id = '$RESERVATION_ID';"
+```
+
+Resultado esperado:
+
+```
+                  id                  |    status    |           pdf_url
+--------------------------------------+--------------+-------------------------------
+ 7c8d9e0f-...                        | issued       | https://storage.showpass...
+```
+
+### 11.2 Verificar o log do worker-service
+
+No terminal do worker-service, após o pagamento:
+
+```
+[PaymentConfirmedConsumer] Gerando ingressos para o pedido { orderId: '...', itemCount: 2 }
+[TicketGeneratorService]   Ingresso gerado { ticketId: '...', buyerId: '...', eventId: '...' }
+[PdfGeneratorService]      PDF criado { pages: 1, sizeKb: 42 }
+[PdfStorageService]        Ingresso armazenado { url: 'https://storage.showpass...' }
+```
+
+> **Em produção**, o `pdfUrl` aponta para um bucket S3. Em desenvolvimento, a URL
+> é gerada com um domínio local (`storage.showpass.local`) — não é acessível
+> via browser, mas o registro no banco confirma que o worker processou corretamente.
+
+---
+
+## 12. Fluxo 9 — Organizador confere as vendas
+
+Após o pagamento confirmado, o dashboard do organizador deve refletir a venda.
+
+### 12.1 Verificar via dashboard
+
+1. Logue como organizer (`organizer@showpass.com`)
+2. Acesse `http://localhost:3001/dashboard`
+3. Aguardar ~5s (a page faz polling ou recarregue manualmente)
+
+**O que deve aparecer:**
+
+| Card | Valor esperado |
+|---|---|
+| **Ingressos vendidos** | 2 (os 2 do checkout) |
+| **Receita total** | R$ 300,00 (2 × R$ 150,00) |
+| **Reservas pendentes** | 0 (a reserva virou `confirmed`) |
+
+A tabela "Top Eventos" mostrará "ShowPass Festival 2026" com as métricas.
+
+### 12.2 Verificar via API
+
+```bash
+# Token do organizer
+ORG_TOKEN=$(curl -s -X POST http://localhost:3000/auth/organizers/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"organizer@showpass.com","password":"Senha@12345"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['accessToken'])")
+
+# Métricas do evento
+curl -s "http://localhost:3003/events/$EVENT_ID/metrics" \
+  -H "Authorization: Bearer $ORG_TOKEN" | python3 -m json.tool
+```
+
+Resposta esperada:
+
+```json
+{
+  "totalSold": 2,
+  "totalRevenue": "300.00",
+  "reservationsPending": 0,
+  "checkInRate": 0
+}
+```
+
+### 12.3 Resumo do fluxo completo
+
+```
+Organizer cria evento ──────────────────────────────────────────┐
+                                                                 │
+Buyer faz reserva → Redis lock adquirido (TTL 7min)             │
+       ↓                                                         │
+Buyer paga no Stripe → webhook payment_intent.succeeded          │
+       ↓                                                         │
+payment-service emite payments.payment-confirmed no Kafka        │
+       ↓                                          ↓              │
+booking-service Saga:              worker-service:               │
+reservation → confirmed            gera ticket PDF               │
+Redis lock liberado                armazena URL S3               │
+       ↓                                                         │
+Dashboard organizer reflete as vendas ◄──────────────────────────┘
+```
+
+---
+
+## 13. Fluxo 10 — Proteção de rotas e auto-redirect
 
 Esses testes validam o **middleware Edge** (sem flash de conteúdo).
 
@@ -381,7 +695,7 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 
 ---
 
-## 9. Fluxo 6 — Loading spinner (comportamento padrão)
+## 14. Fluxo 11 — Loading spinner (comportamento padrão)
 
 Abra o DevTools → aba **Network** para acompanhar as requests enquanto testa.
 
@@ -417,7 +731,7 @@ No DevTools → Network:
 
 ---
 
-## 10. Fluxo 7 — Tema dark/light
+## 15. Fluxo 12 — Tema dark/light
 
 ### 10.1 No painel (dashboard)
 
@@ -439,7 +753,7 @@ No browser (F12 → Sources → `(app-pages-router)…layout.tsx`): o script `th
 
 ---
 
-## 11. Fluxo 8 — Logout correto (sem 401/404 no Network)
+## 16. Fluxo 13 — Logout correto (sem 401/404 no Network)
 
 Abra DevTools → **Network** antes de clicar em Sair.
 
@@ -456,7 +770,7 @@ Para buyer:
 
 ---
 
-## 12. Fluxo 9 — Observabilidade (métricas + traces + logs)
+## 17. Fluxo 14 — Observabilidade (métricas + traces + logs)
 
 > **Pré-requisito:** booking-service rodando (Terminal 5 da [seção 3](#3-subir-o-stack-de-desenvolvimento)).
 
@@ -624,7 +938,7 @@ No Tempo, abra um trace → clique em qualquer span → **"Logs for this span"**
 
 ---
 
-## 13. Testes automatizados (CI local)
+## 18. Testes automatizados (CI local)
 
 ```bash
 # Roda lint (ESLint) + type-check (tsc --noEmit) + audit de segurança
@@ -656,7 +970,7 @@ Tests: 3 passed
 
 ---
 
-## 14. Portas e URLs de referência
+## 19. Portas e URLs de referência
 
 | Serviço | Porta | URL |
 |---|---|---|

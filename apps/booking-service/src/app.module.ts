@@ -13,6 +13,7 @@ import { TicketBatchesModule } from './modules/ticket-batches/ticket-batches.mod
 import { EventsModule } from './modules/events/events.module.js';
 import { BuyersModule } from './modules/buyers/buyers.module.js';
 import { HealthModule } from './modules/health/health.module.js';
+import { SagasModule } from './modules/sagas/sagas.module.js';
 
 @Module({
   imports: [
@@ -44,6 +45,9 @@ import { HealthModule } from './modules/health/health.module.js';
     // Consumer Kafka: replica buyer do auth-service para satisfazer FK
     // Reservation.buyerId. Dados sensíveis NUNCA trafegam (ver BuyersConsumer).
     BuyersModule,
+    // Saga Pattern (cap-18): reage a payment.confirmed e payment.failed
+    // para confirmar ou compensar reservas via Kafka choreography.
+    SagasModule,
   ],
 })
 // eslint-disable-next-line @typescript-eslint/no-extraneous-class -- padrão NestJS

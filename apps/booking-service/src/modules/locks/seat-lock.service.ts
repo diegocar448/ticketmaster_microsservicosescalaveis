@@ -3,7 +3,8 @@
 // TTL de 15 minutos: se o buyer não completar o checkout, o lock expira.
 
 import { Injectable, Logger } from '@nestjs/common';
-import { RedisService } from '@showpass/redis';
+import type CircuitBreaker from 'opossum';
+import { RedisService, createCircuitBreaker } from '@showpass/redis';
 
 // Prefixo das chaves no Redis — evita colisões com outras chaves
 const LOCK_PREFIX = 'seat:lock';
@@ -21,8 +22,21 @@ export interface SeatLockResult {
 @Injectable()
 export class SeatLockService {
   private readonly logger = new Logger(SeatLockService.name);
+  // Circuit Breaker para acquireLock: se o Redis cair, fallback retorna false
+  // → reserva rejeitada com mensagem amigável em vez de timeout + erro 500.
+  private readonly acquireLockBreaker: CircuitBreaker<[string, string, number], boolean>;
 
-  constructor(private readonly redis: RedisService) {}
+  constructor(private readonly redis: RedisService) {
+    this.acquireLockBreaker = createCircuitBreaker(
+      (key: string, ownerId: string, ttl: number) =>
+        this.redis.acquireLock(key, ownerId, ttl),
+      'redis-seat-lock',
+    );
+
+    // Fallback quando o circuito está aberto: retornar false imediatamente
+    // (mesmo efeito que "assento indisponível" — buyer vê mensagem amigável)
+    this.acquireLockBreaker.fallback(() => false);
+  }
 
   /**
    * Gera a chave Redis para um assento específico de um evento.
@@ -43,7 +57,9 @@ export class SeatLockService {
     buyerId: string,
   ): Promise<boolean> {
     const key = this.buildKey(eventId, seatId);
-    return this.redis.acquireLock(key, buyerId, LOCK_TTL_SECONDS);
+    // Circuit Breaker: se o Redis estiver falhando o fallback retorna false,
+    // evitando que o booking-service trave aguardando timeout de rede.
+    return this.acquireLockBreaker.fire(key, buyerId, LOCK_TTL_SECONDS);
   }
 
   /**

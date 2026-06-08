@@ -1,0 +1,50 @@
+// packages/proto/event.proto
+//
+// Contrato gRPC entre booking-service (client) e event-service (server).
+//
+// Por que gRPC em vez de HTTP REST para comunicação interna?
+// 1. Protobuf serializa ~5x menor que JSON → menos banda em pico de 300k reqs
+// 2. HTTP/2 multiplexing → uma conexão TCP para todas as chamadas paralelas
+// 3. Schema fortemente tipado → TypeScript gerado automaticamente (zero divergência)
+// 4. Streaming nativo → WatchSeatAvailability push sem polling do client
+//
+// Compilar TypeScript: `grpc-tools` ou `ts-proto` geram os tipos a partir deste arquivo.
+// No ShowPass usamos `@grpc/proto-loader` + `@grpc/grpc-js` em runtime (sem geração).
+
+syntax = "proto3";
+
+package showpass.events;
+
+// Serviço exposto pelo event-service na porta 50051.
+service EventService {
+  // Buscar dados básicos do evento — booking-service chama antes de criar reserva.
+  // Substitui GET /events/:id/public-meta via HTTP por chamada tipada e mais rápida.
+  rpc GetEvent (GetEventRequest) returns (EventResponse);
+
+  // Stream de mudanças de disponibilidade de assentos.
+  // search-service subscreve para atualizar o índice Elasticsearch em tempo real
+  // sem polling HTTP periódico (reduz carga no event-service em ~70%).
+  rpc WatchSeatAvailability (WatchRequest) returns (stream SeatAvailabilityUpdate);
+}
+
+message GetEventRequest {
+  string event_id = 1;
+}
+
+message EventResponse {
+  string id           = 1;
+  string title        = 2;
+  string status       = 3;  // on_sale, sold_out, published, draft, cancelled, completed
+  string organizer_id = 4;
+  int32  max_tickets_per_order = 5;
+}
+
+message WatchRequest {
+  string event_id = 1;
+}
+
+message SeatAvailabilityUpdate {
+  string seat_id    = 1;
+  string status     = 2;  // available, locked, sold
+  string changed_by = 3;  // buyer_id (para depuração e auditoria)
+}
