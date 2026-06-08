@@ -7,6 +7,14 @@
 
 ---
 
+<p align="center">
+  <img src="docs/diagrams/showpass-arquitetura.gif" alt="Fluxo de compra do ShowPass: reserva → Redis SETNX → Kafka → checkout Stripe → saga → ingresso" width="100%">
+  <br>
+  <em>Fluxo de compra ponta a ponta — reserva com lock atômico no Redis, eventos via Kafka, checkout no Stripe e geração assíncrona do ingresso. (<a href="docs/architecture.md">diagramas detalhados</a>)</em>
+</p>
+
+---
+
 ## O Problema que o Ticketmaster Resolve
 
 Imagine que Fulano famosão anuncia uma turnê. Em 60 segundos, **300.000 pessoas** tentam comprar o mesmo assento D14, fileira 5. Sem arquitetura correta:

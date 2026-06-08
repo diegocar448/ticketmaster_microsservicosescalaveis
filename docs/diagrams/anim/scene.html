@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<style>
+  html,body{margin:0;padding:0;background:#fff;}
+  #c{display:block;}
+  /* Fonte corporativa limpa */
+  @font-face { font-family: 'Inter'; src: local('Inter'), local('Arial'); }
+</style>
+</head>
+<body>
+<canvas id="c" width="1200" height="675"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const W = 1200, H = 675;
+
+// ---------- Paleta corporativa clara ----------
+const COL = {
+  bg:      '#f4f7fb',
+  card:    '#ffffff',
+  border:  '#e2e8f0',
+  ink:     '#0f172a',
+  ink2:    '#475569',
+  muted:   '#94a3b8',
+  edge:    '#cbd5e1',
+  blue:    '#2563eb',   // sincrono
+  amber:   '#d97706',   // escrita (write)
+  teal:    '#0d9488',   // leitura (read)
+  red:     '#dc2626',   // redis
+  violet:  '#7c3aed',   // kafka
+  green:   '#16a34a',   // sucesso
+  headbg1: '#0f2545',
+  headbg2: '#1e3a8a',
+};
+
+// ---------- Helpers de desenho ----------
+function rr(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+function shadowOn(blur=18,oy=6,a=0.12){ ctx.shadowColor='rgba(15,23,42,'+a+')'; ctx.shadowBlur=blur; ctx.shadowOffsetX=0; ctx.shadowOffsetY=oy; }
+function shadowOff(){ ctx.shadowColor='transparent'; ctx.shadowBlur=0; ctx.shadowOffsetY=0; }
+function lerp(a,b,u){ return a+(b-a)*u; }
+function easeInOut(u){ return u<0.5 ? 2*u*u : 1-Math.pow(-2*u+2,2)/2; }
+
+// ---------- Nós do fluxo ----------
+// Cada nó: id, x, y (centro), tipo, label, sub, cor
+const N = {
+  buyer:   {x:78,  y:355, r:30, label:'Comprador',   color:COL.ink2, shape:'actor'},
+  gw:      {x:225, y:355, w:118,h:62, label:'API Gateway', sub:'JWT · proxy', color:COL.blue, shape:'card'},
+  booking: {x:415, y:280, w:128,h:64, label:'Booking', sub:'locks · CQRS', color:COL.amber, shape:'card'},
+  event:   {x:415, y:455, w:128,h:60, label:'Event Svc', sub:'gRPC :50051', color:COL.blue, shape:'card'},
+  redis:   {x:600, y:280, r:30, label:'Redis', sub:'SETNX lock', color:COL.red, shape:'cyl'},
+  kafka:   {x:600, y:455, w:128,h:56, label:'Apache Kafka', sub:'event bus', color:COL.violet, shape:'bus'},
+  payment: {x:770, y:280, w:128,h:64, label:'Payment', sub:'orders · webhook', color:COL.amber, shape:'card'},
+  worker:  {x:770, y:455, w:128,h:60, label:'Worker', sub:'QR · PDF', color:COL.blue, shape:'card'},
+  stripe:  {x:912, y:280, w:116,h:60, label:'Stripe', sub:'checkout', color:COL.violet, shape:'card'},
+  ticket:  {x:912, y:455, r:30, label:'Ingresso', sub:'PostgreSQL', color:COL.green, shape:'cyl'},
+};
+
+function nodeAnchor(n, side){
+  // retorna ponto de borda do nó para conectar arestas
+  if(n.shape==='card'||n.shape==='bus'){
+    const hw=n.w/2, hh=n.h/2;
+    if(side==='r') return {x:n.x+hw, y:n.y};
+    if(side==='l') return {x:n.x-hw, y:n.y};
+    if(side==='t') return {x:n.x, y:n.y-hh};
+    if(side==='b') return {x:n.x, y:n.y+hh};
+  } else {
+    const r=n.r+2;
+    if(side==='r') return {x:n.x+r, y:n.y};
+    if(side==='l') return {x:n.x-r, y:n.y};
+    if(side==='t') return {x:n.x, y:n.y-r};
+    if(side==='b') return {x:n.x, y:n.y+r};
+  }
+  return {x:n.x, y:n.y};
+}
+
+// ---------- Arestas (segmentos do fluxo) ----------
+// dashed: assincrono (Kafka/gRPC). color por papel.
+const E = {
+  e_bgw:  {a:['buyer','r'], b:['gw','l'],      color:COL.blue},
+  e_gwb:  {a:['gw','t'],    b:['booking','l'], color:COL.amber, bend:'h2v'},
+  e_be:   {a:['booking','b'],b:['event','t'],  color:COL.blue, dashed:true},
+  e_br:   {a:['booking','r'],b:['redis','l'],  color:COL.amber},
+  e_bk:   {a:['booking','b'],b:['kafka','l'],  color:COL.violet, dashed:true, bend:'v2h'},
+  e_gwp:  {a:['gw','t'],    b:['payment','l'], color:COL.amber, bend:'farh2v'},
+  e_ps:   {a:['payment','r'],b:['stripe','l'], color:COL.violet},
+  e_pk:   {a:['payment','b'],b:['kafka','r'],  color:COL.violet, dashed:true, bend:'v2h'},
+  e_kb:   {a:['kafka','t'], b:['booking','b'], color:COL.violet, dashed:true},
+  e_kw:   {a:['kafka','r'], b:['worker','l'],  color:COL.violet, dashed:true},
+  e_wt:   {a:['worker','r'],b:['ticket','l'],  color:COL.green},
+};
+
+function edgePath(e){
+  const A = nodeAnchor(N[e.a[0]], e.a[1]);
+  const B = nodeAnchor(N[e.b[0]], e.b[1]);
+  return {A,B,bend:e.bend};
+}
+// ponto ao longo da aresta para u in [0,1] (com cotovelo opcional)
+function edgePoint(e,u){
+  const {A,B,bend}=edgePath(e);
+  if(!bend){ return {x:lerp(A.x,B.x,u), y:lerp(A.y,B.y,u)}; }
+  // cotovelo em L: define ponto medio
+  let M;
+  if(bend==='h2v')   M={x:B.x, y:A.y};
+  else if(bend==='v2h') M={x:A.x, y:B.y};
+  else if(bend==='farh2v') M={x:B.x, y:A.y};
+  else M={x:(A.x+B.x)/2,y:(A.y+B.y)/2};
+  // dois segmentos A->M->B, dividir u
+  const L1=Math.hypot(M.x-A.x,M.y-A.y), L2=Math.hypot(B.x-M.x,B.y-M.y);
+  const tot=L1+L2||1; const uu=u*tot;
+  if(uu<=L1){ const k=uu/(L1||1); return {x:lerp(A.x,M.x,k),y:lerp(A.y,M.y,k)}; }
+  const k=(uu-L1)/(L2||1); return {x:lerp(M.x,B.x,k),y:lerp(M.y,B.y,k)};
+}
+function strokeEdge(e,active){
+  const {A,B,bend}=edgePath(e);
+  ctx.lineWidth = active?3.2:2;
+  ctx.strokeStyle = active? e.color : COL.edge;
+  ctx.setLineDash(e.dashed?[7,6]:[]);
+  ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.beginPath();
+  ctx.moveTo(A.x,A.y);
+  if(bend){
+    let M;
+    if(bend==='h2v')   M={x:B.x, y:A.y};
+    else if(bend==='v2h') M={x:A.x, y:B.y};
+    else if(bend==='farh2v') M={x:B.x, y:A.y};
+    ctx.lineTo(M.x,M.y);
+  }
+  ctx.lineTo(B.x,B.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+// ---------- Desenho dos nós ----------
+function drawNode(n, glow){
+  ctx.save();
+  if(glow){ ctx.shadowColor=hexA(n.color,0.55); ctx.shadowBlur=26; }
+  if(n.shape==='card'||n.shape==='bus'){
+    const x=n.x-n.w/2, y=n.y-n.h/2;
+    shadowOn(14,5,glow?0.0:0.10);
+    if(glow){ ctx.shadowColor=hexA(n.color,0.5); ctx.shadowBlur=26; ctx.shadowOffsetY=0; }
+    ctx.fillStyle=COL.card;
+    rr(x,y,n.w,n.h,12); ctx.fill();
+    shadowOff();
+    ctx.lineWidth= glow?2.5:1.4;
+    ctx.strokeStyle= glow? n.color : COL.border;
+    rr(x,y,n.w,n.h,12); ctx.stroke();
+    // faixa de cor a esquerda
+    ctx.fillStyle=n.color;
+    rr(x,y,6,n.h,12); ctx.fill();
+    // badge icone
+    drawBadge(x+24, n.y, n.color, n.shape==='bus'?'bus':'svc');
+    // textos
+    ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+    ctx.fillStyle=COL.ink; ctx.font='600 15px Inter, Arial';
+    ctx.fillText(n.label, x+44, n.y-2);
+    if(n.sub){ ctx.fillStyle=COL.ink2; ctx.font='11px Inter, Arial'; ctx.fillText(n.sub, x+44, n.y+15); }
+  } else if(n.shape==='cyl'){
+    drawCylinder(n.x, n.y, n.r, n.color, glow);
+    ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+    ctx.fillStyle=COL.ink; ctx.font='600 13px Inter, Arial';
+    ctx.fillText(n.label, n.x, n.y+n.r+18);
+    if(n.sub){ ctx.fillStyle=COL.ink2; ctx.font='11px Inter, Arial'; ctx.fillText(n.sub, n.x, n.y+n.r+33); }
+  } else if(n.shape==='actor'){
+    drawActor(n.x, n.y, n.color, glow);
+    ctx.textAlign='center'; ctx.fillStyle=COL.ink; ctx.font='600 13px Inter, Arial';
+    ctx.fillText(n.label, n.x, n.y+n.r+20);
+  }
+  ctx.restore();
+}
+function hexA(hex,a){
+  const h=hex.replace('#',''); const r=parseInt(h.substr(0,2),16),g=parseInt(h.substr(2,2),16),b=parseInt(h.substr(4,2),16);
+  return 'rgba('+r+','+g+','+b+','+a+')';
+}
+function drawBadge(cx,cy,color,kind){
+  ctx.save();
+  ctx.fillStyle=hexA(color,0.14);
+  ctx.beginPath(); ctx.arc(cx,cy,13,0,7); ctx.fill();
+  ctx.strokeStyle=color; ctx.lineWidth=2;
+  if(kind==='bus'){
+    // tres barras (stream)
+    ctx.beginPath();
+    for(let i=-1;i<=1;i++){ ctx.moveTo(cx-6,cy+i*4); ctx.lineTo(cx+6,cy+i*4); }
+    ctx.stroke();
+  } else {
+    // quadrado arredondado (servico)
+    ctx.beginPath(); rr(cx-6,cy-6,12,12,3); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx,cy,2,0,7); ctx.fillStyle=color; ctx.fill();
+  }
+  ctx.restore();
+}
+function drawCylinder(cx,cy,r,color,glow){
+  ctx.save();
+  if(glow){ ctx.shadowColor=hexA(color,0.55); ctx.shadowBlur=24; }
+  const w=r*1.7, h=r*1.9, x=cx-w/2, y=cy-h/2, ee=r*0.5;
+  ctx.fillStyle=COL.card; ctx.strokeStyle=color; ctx.lineWidth=glow?2.6:2;
+  // corpo
+  ctx.beginPath();
+  ctx.moveTo(x,y+ee);
+  ctx.lineTo(x,y+h-ee);
+  ctx.bezierCurveTo(x,y+h, x+w,y+h, x+w,y+h-ee);
+  ctx.lineTo(x+w,y+ee);
+  ctx.stroke();
+  ctx.shadowBlur=0;
+  ctx.fillStyle=hexA(color,0.10);
+  ctx.beginPath();
+  ctx.moveTo(x,y+ee); ctx.lineTo(x,y+h-ee);
+  ctx.bezierCurveTo(x,y+h, x+w,y+h, x+w,y+h-ee);
+  ctx.lineTo(x+w,y+ee);
+  ctx.bezierCurveTo(x+w,y+ee*2, x,y+ee*2, x,y+ee);
+  ctx.fill();
+  // topo
+  ctx.beginPath();
+  ctx.ellipse(cx,y+ee,w/2,ee,0,0,7);
+  ctx.fillStyle=hexA(color,0.18); ctx.fill();
+  ctx.strokeStyle=color; ctx.lineWidth=2; ctx.stroke();
+  ctx.restore();
+}
+function drawActor(cx,cy,color,glow){
+  ctx.save();
+  if(glow){ ctx.shadowColor=hexA(COL.blue,0.5); ctx.shadowBlur=22; }
+  ctx.fillStyle=COL.card; ctx.strokeStyle=COL.ink2; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(cx,cy,cy?28:28,0,7); ctx.fill(); ctx.stroke();
+  ctx.shadowBlur=0;
+  // cabeca
+  ctx.fillStyle=COL.ink2;
+  ctx.beginPath(); ctx.arc(cx,cy-7,8,0,7); ctx.fill();
+  // ombros
+  ctx.beginPath();
+  ctx.arc(cx,cy+16,13,Math.PI*1.08,Math.PI*1.92,false);
+  ctx.lineWidth=6; ctx.strokeStyle=COL.ink2; ctx.stroke();
+  ctx.restore();
+}
+
+// ---------- Painel direito: a stack (visao geral) ----------
+const STACK = [
+  {k:'gw',     t:'api-gateway',     s:':3000 · JWT RS256'},
+  {k:'booking',t:'booking-service', s:':3004 · Redis locks'},
+  {k:'event',  t:'event-service',   s:':3003 · gRPC'},
+  {k:'payment',t:'payment-service', s:':3002 · Stripe'},
+  {k:'worker', t:'worker-service',  s:'QR · PDF · e-mail'},
+  {k:'auth',   t:'auth-service',    s:':3006 · RS256'},
+  {k:'search', t:'search-service',  s:':3005 · Elasticsearch'},
+];
+function drawStackPanel(activeKey){
+  const px=1010, py=120, pw=170, ph=380;
+  ctx.save();
+  shadowOn(16,6,0.08);
+  ctx.fillStyle=COL.card; rr(px,py,pw,ph,14); ctx.fill();
+  shadowOff();
+  ctx.strokeStyle=COL.border; ctx.lineWidth=1.2; rr(px,py,pw,ph,14); ctx.stroke();
+  ctx.textAlign='left';
+  ctx.fillStyle=COL.ink; ctx.font='700 13px Inter, Arial';
+  ctx.fillText('STACK · 7 serviços', px+16, py+26);
+  ctx.strokeStyle=COL.border; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(px+16,py+36); ctx.lineTo(px+pw-16,py+36); ctx.stroke();
+  let y=py+52;
+  for(const it of STACK){
+    const on = it.k===activeKey;
+    if(on){ ctx.fillStyle=hexA(COL.blue,0.10); rr(px+8,y-14,pw-16,40,8); ctx.fill();
+            ctx.fillStyle=COL.blue; rr(px+8,y-14,4,40,8); ctx.fill(); }
+    ctx.fillStyle= on?COL.blue:COL.ink; ctx.font='600 13px Inter, Arial';
+    ctx.fillText(it.t, px+20, y+2);
+    ctx.fillStyle=COL.ink2; ctx.font='10.5px Inter, Arial';
+    ctx.fillText(it.s, px+20, y+18);
+    y+=48;
+  }
+  // rodape infra
+  ctx.fillStyle=COL.ink2; ctx.font='10px Inter, Arial';
+  ctx.fillText('+ Kafka · PostgreSQL · Redis', px+16, py+ph-14);
+  ctx.restore();
+}
+
+// ---------- Fases do fluxo ----------
+// cada fase: edges[], glowNodes[], stackKey, caption, num
+const PHASES = [
+  {span:[0.00,0.16], edges:['e_bgw','e_gwb'], glow:['gw','booking'], stack:'gw',
+   num:'1', cap:'Comprador solicita reserva → API Gateway autentica (JWT) e roteia ao Booking Service.'},
+  {span:[0.16,0.32], edges:['e_be','e_br'], glow:['booking','redis','event'], stack:'booking',
+   num:'2', cap:'Redis SETNX = lock atômico. Impossível dois compradores travarem o mesmo assento.'},
+  {span:[0.32,0.46], edges:['e_bk'], glow:['booking','kafka'], stack:'booking',
+   num:'3', cap:'Booking publica bookings.reservation-created no Kafka (assíncrono, desacoplado).'},
+  {span:[0.46,0.63], edges:['e_gwp','e_ps'], glow:['payment','stripe'], stack:'payment',
+   num:'4', cap:'Checkout no Stripe. O webhook é validado por HMAC-SHA256 (OWASP A08).'},
+  {span:[0.63,0.81], edges:['e_pk','e_kb','e_kw'], glow:['kafka','booking','worker'], stack:'payment',
+   num:'5', cap:'payments.payment-confirmed → Saga confirma a reserva e dispara o Worker.'},
+  {span:[0.81,1.00], edges:['e_wt'], glow:['worker','ticket'], stack:'worker',
+   num:'6', cap:'Worker gera o ingresso (QR HMAC + PDF) e persiste como issued. Compra concluída.'},
+];
+function phaseAt(t){
+  for(let i=0;i<PHASES.length;i++){ const p=PHASES[i]; if(t>=p.span[0]&&t<p.span[1]) return {p,i}; }
+  return {p:PHASES[PHASES.length-1], i:PHASES.length-1};
+}
+
+// ---------- Cabecalho ----------
+function drawHeader(){
+  const g=ctx.createLinearGradient(0,0,W,0);
+  g.addColorStop(0,COL.headbg1); g.addColorStop(1,COL.headbg2);
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,76);
+  ctx.fillStyle='#fff'; ctx.textAlign='left'; ctx.font='800 23px Inter, Arial';
+  ctx.fillText('ShowPass', 28, 33);
+  // divisor vertical entre logo e titulo
+  ctx.strokeStyle=hexA('#ffffff',0.30); ctx.lineWidth=1.4;
+  ctx.beginPath(); ctx.moveTo(150,16); ctx.lineTo(150,40); ctx.stroke();
+  ctx.fillStyle=hexA('#ffffff',0.92); ctx.font='600 14px Inter, Arial';
+  ctx.fillText('Arquitetura de Microsserviços Escaláveis', 166, 31);
+  ctx.fillStyle=hexA('#ffffff',0.62); ctx.font='12.5px Inter, Arial';
+  ctx.fillText('Clone do Ticketmaster · 300.000 pessoas no mesmo assento · zero double-booking', 28, 58);
+  // chip stack
+  ctx.fillStyle=hexA('#ffffff',0.14); rr(W-300,22,270,32,16); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.font='600 11.5px Inter, Arial'; ctx.textAlign='center';
+  ctx.fillText('NestJS 11 · Kafka · Redis · PostgreSQL · EKS', W-165, 42);
+}
+
+// ---------- Legenda ----------
+function drawLegend(){
+  const lx=30, ly=120;
+  const items=[['Síncrono (HTTP/gRPC)',COL.blue,false],['Assíncrono (Kafka)',COL.violet,true],
+               ['Escrita transacional',COL.amber,false],['Leitura/sucesso',COL.green,false]];
+  ctx.textAlign='left';
+  let x=lx;
+  for(const [lab,c,dash] of items){
+    ctx.strokeStyle=c; ctx.lineWidth=3; ctx.setLineDash(dash?[6,5]:[]);
+    ctx.beginPath(); ctx.moveTo(x,ly); ctx.lineTo(x+26,ly); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle=COL.ink2; ctx.font='11px Inter, Arial';
+    ctx.fillText(lab, x+32, ly+4);
+    x += 34 + ctx.measureText(lab).width + 26;
+  }
+}
+
+// ---------- Caption (rodape) ----------
+function drawCaption(p, localProg){
+  const x=30, y=560, w=960, h=86;
+  ctx.save();
+  shadowOn(18,8,0.10);
+  ctx.fillStyle=COL.card; rr(x,y,w,h,14); ctx.fill();
+  shadowOff();
+  ctx.strokeStyle=COL.border; ctx.lineWidth=1.2; rr(x,y,w,h,14); ctx.stroke();
+  // numero em circulo
+  ctx.fillStyle=COL.blue; ctx.beginPath(); ctx.arc(x+42,y+h/2,24,0,7); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.font='800 22px Inter, Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(p.num, x+42, y+h/2+1);
+  // texto
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.fillStyle=COL.ink2; ctx.font='700 12px Inter, Arial';
+  ctx.fillText('FLUXO DE COMPRA — PASSO '+p.num+' DE 6', x+84, y+30);
+  ctx.fillStyle=COL.ink; ctx.font='600 16px Inter, Arial';
+  wrapText(p.cap, x+84, y+54, w-110, 21);
+  // barra de progresso por etapa
+  ctx.fillStyle=COL.border; rr(x+84,y+h-16,w-200,5,3); ctx.fill();
+  ctx.fillStyle=COL.blue; rr(x+84,y+h-16,(w-200)*localProg,5,3); ctx.fill();
+  ctx.restore();
+}
+function wrapText(text,x,y,maxW,lh){
+  const words=text.split(' '); let line=''; let yy=y;
+  for(const w of words){ const test=line+w+' '; if(ctx.measureText(test).width>maxW && line){ ctx.fillText(line,x,yy); line=w+' '; yy+=lh; } else line=test; }
+  ctx.fillText(line,x,yy);
+}
+
+// ---------- Dot animado ----------
+function drawDot(pt,color){
+  ctx.save();
+  ctx.shadowColor=hexA(color,0.7); ctx.shadowBlur=14;
+  ctx.fillStyle=color; ctx.beginPath(); ctx.arc(pt.x,pt.y,6,0,7); ctx.fill();
+  ctx.shadowBlur=0; ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(pt.x,pt.y,2.4,0,7); ctx.fill();
+  ctx.restore();
+}
+
+// ---------- DRAW principal ----------
+function draw(t){
+  // fundo
+  ctx.fillStyle=COL.bg; ctx.fillRect(0,0,W,H);
+  drawHeader();
+  drawLegend();
+
+  const {p,i}=phaseAt(t);
+  const activeEdges = new Set(p.edges);
+  const glowNodes = new Set(p.glow);
+  const localProg = easeInOut((t-p.span[0])/(p.span[1]-p.span[0]));
+
+  drawStackPanel(p.stack);
+
+  // arestas: inativas primeiro, ativas por cima
+  for(const key in E){ if(!activeEdges.has(key)) strokeEdge(E[key], false); }
+  for(const key of p.edges){ strokeEdge(E[key], true); }
+
+  // nós: inativos depois ativos (glow)
+  for(const id in N){ if(!glowNodes.has(id)) drawNode(N[id], false); }
+  for(const id of p.glow){ if(N[id]) drawNode(N[id], true); }
+
+  // dot percorrendo as arestas ativas (concatenadas)
+  if(p.edges.length){
+    const segs=p.edges; const total=segs.length;
+    const pos=localProg*total; const si=Math.min(total-1, Math.floor(pos)); const su=pos-si;
+    const e=E[segs[si]];
+    drawDot(edgePoint(e,su), e.color);
+    // dot tambem no inicio de cada aresta ativa paralela (e_kb,e_kw) para sensacao de fan-out
+    if(p.edges.length>1 && si===0){
+      for(let j=1;j<p.edges.length;j++){ const ej=E[p.edges[j]]; drawDot(edgePoint(ej, su*0.6), ej.color); }
+    }
+  }
+
+  drawCaption(p, localProg);
+
+  // rodape branding
+  ctx.textAlign='right'; ctx.fillStyle=COL.muted; ctx.font='600 12px Inter, Arial';
+  ctx.fillText('ShowPass · tutorial pt-BR de microsserviços em escala big-tech', W-30, H-16);
+}
+
+window.__draw = draw;
+draw(0);
+</script>
+</body>
+</html>

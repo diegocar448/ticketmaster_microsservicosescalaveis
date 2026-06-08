@@ -1,0 +1,119 @@
+flowchart TB
+    USERS["Usuarios\n(Browser / Mobile)"]
+
+    subgraph EDGE["Edge / Frontend"]
+        direction LR
+        CF["Cloudflare\nWaiting Room + CDN"]
+        WEB["Next.js :3001\nFrontend (React)"]
+    end
+
+    GW["api-gateway :3000\nJWT RS256 - Rate Limit - Proxy\nx-user-id / x-user-type"]
+
+    subgraph SVC["Microservicos (Kubernetes / EKS)"]
+        direction LR
+        AUTH["auth-service :3006\nLogin - Refresh RS256"]
+        EVENT["event-service :3003\ngRPC :50051\nEventos - Venues - Lotes"]
+        BOOKING["booking-service :3004\nRedis Locks - CQRS\nCircuit Breaker - Saga"]
+        PAYMENT["payment-service :3002\nOrders - Stripe Checkout"]
+        SEARCH["search-service :3005\nElasticsearch CDC"]
+        WORKER["worker-service\nQR - PDF - E-mail"]
+    end
+
+    subgraph DATA["Bancos de Dados"]
+        direction LR
+        USERDB[("PostgreSQL\nshowpass_auth")]
+        EVENTDB[("PostgreSQL\nshowpass_events")]
+        BOOKINGDB[("PostgreSQL\nshowpass_booking")]
+        PAYMENTDB[("PostgreSQL\nshowpass_payment")]
+        REDIS[("Redis :6379\nSeat Locks SETNX\nTTL 7 min")]
+        ES[("Elasticsearch :9200")]
+    end
+
+    KAFKA[["Apache Kafka - 17 topicos\nbookings.* - payments.* - events.*"]]
+    STRIPE["Stripe\nCheckout + Webhooks"]
+
+    subgraph OBS["Observabilidade"]
+        direction LR
+        OTEL["OTEL Collector\n:4318"]
+        PROM["Prometheus\n:9090"]
+        LOKI["Loki\n:3100"]
+        TEMPO["Tempo\n:3200"]
+        GRAFANA["Grafana :3002\nDashboards"]
+    end
+
+    subgraph LEGEND["Legenda"]
+        direction TB
+        L1(( )) -->|"sincrono (HTTP / gRPC)"| L2(( ))
+        L3(( )) -.->|"assincrono (Kafka)"| L4(( ))
+        L5(( )) -->|"nucleo de ESCRITA (transacional)"| L6(( ))
+        L7(( )) -->|"modelo de LEITURA (CQRS / busca)"| L8(( ))
+    end
+
+    %% Caminho sincrono (requisicao do usuario)
+    USERS -->|HTTPS| CF
+    USERS -->|HTTPS| WEB
+    CF --> GW
+    WEB --> GW
+    GW --> AUTH
+    GW --> EVENT
+    GW --> BOOKING
+    GW --> PAYMENT
+    GW --> SEARCH
+
+    %% Servicos para seus bancos
+    AUTH --> USERDB
+    EVENT --> EVENTDB
+    EVENT --> ES
+    BOOKING --> BOOKINGDB
+    BOOKING --> REDIS
+    PAYMENT --> PAYMENTDB
+    SEARCH --> ES
+    WORKER --> BOOKINGDB
+
+    %% gRPC interno com Circuit Breaker
+    BOOKING -.->|"gRPC :50051\nCircuit Breaker"| EVENT
+
+    %% Pagamento externo
+    PAYMENT <-->|"Webhook\nHMAC-SHA256"| STRIPE
+
+    %% Kafka - producao e consumo (assincrono)
+    BOOKING -.->|publish| KAFKA
+    PAYMENT -.->|publish| KAFKA
+    EVENT -.->|publish| KAFKA
+    KAFKA -.->|consume| WORKER
+    KAFKA -.->|consume| SEARCH
+
+    %% Observabilidade - uma linha agregada do conjunto de servicos
+    SVC -.->|"OTLP\ntraces - metrics - logs"| OTEL
+    OTEL --> PROM
+    OTEL --> LOKI
+    OTEL --> TEMPO
+    PROM --> GRAFANA
+    LOKI --> GRAFANA
+    TEMPO --> GRAFANA
+
+    classDef service fill:#1e3a5f,stroke:#4a90d9,color:#fff
+    classDef db fill:#2d4a1e,stroke:#5a9e3a,color:#fff
+    classDef infra fill:#4a2d1e,stroke:#c07a3a,color:#fff
+    classDef obs fill:#2d1e4a,stroke:#7a5ac0,color:#fff
+    classDef gateway fill:#1e4a3a,stroke:#3ac07a,color:#fff
+    classDef external fill:#1a1a2e,stroke:#888,color:#ccc
+
+    class AUTH,EVENT,BOOKING,PAYMENT,SEARCH,WORKER service
+    class USERDB,EVENTDB,BOOKINGDB,PAYMENTDB,REDIS,ES db
+    class KAFKA infra
+    class OTEL,PROM,LOKI,TEMPO,GRAFANA obs
+    class GW gateway
+    class USERS,STRIPE,CF,WEB external
+
+    classDef legend fill:#333,stroke:#666,color:#333,width:14px,height:14px
+    class L1,L2,L3,L4,L5,L6,L7,L8 legend
+
+    %% Cor de linha = dimensao read/write (ortogonal ao estilo solido/tracejado).
+    %% Indices contam a ordem de declaracao das arestas no arquivo (legenda vem primeiro).
+    %% Caminho de ESCRITA (ambar): exemplo na legenda + GW->booking, GW->payment, booking->DB/Redis, payment->DB
+    linkStyle 2 stroke:#c07a3a,stroke-width:2px
+    linkStyle 10,11,16,17,18 stroke:#c07a3a,stroke-width:2px
+    %% Caminho de LEITURA (ciano): exemplo na legenda + GW->search, search->ES, kafka(CDC)->search
+    linkStyle 3 stroke:#2ab0b0,stroke-width:2px
+    linkStyle 12,19,27 stroke:#2ab0b0,stroke-width:2px
