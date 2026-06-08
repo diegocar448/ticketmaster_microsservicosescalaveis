@@ -372,130 +372,371 @@ export class BookingSaga {
 
 ## Testando na prática
 
-Este capítulo introduz padrões avançados que você pode verificar individualmente antes de integrá-los ao sistema completo.
+Esta seção mostra como verificar cada padrão do cap-18 com comandos que rodam no setup real do projeto — sem ferramentas extras além das que já estão instaladas.
 
-### Testando gRPC (Passo 18.1)
+### Pré-requisitos
 
-**1. Instalar grpcurl**
+**1. Infra rodando no Docker**
 
 ```bash
-# macOS
-brew install grpcurl
-
-# Linux
-curl -sSL https://github.com/fullstorydev/grpcurl/releases/download/v1.9.1/grpcurl_1.9.1_linux_x86_64.tar.gz | tar xz
-sudo mv grpcurl /usr/local/bin/
+docker compose up -d postgres redis kafka
 ```
 
-**2. Subir os serviços com gRPC habilitado**
+Aguardar os três ficarem `healthy`:
 
 ```bash
-pnpm --filter @showpass/event-service run dev    # porta gRPC: 50051
-pnpm --filter @showpass/booking-service run dev  # chama event-service via gRPC
+docker compose ps | grep -E "postgres|redis|kafka"
+# postgres-1   Up X minutes (healthy)
+# redis-1      Up X minutes (healthy)
+# kafka-1      Up X minutes (healthy)
 ```
 
-**3. Listar serviços disponíveis via gRPC reflection**
+**2. Criar os tópicos Kafka (só na primeira vez)**
 
 ```bash
-grpcurl -plaintext localhost:50051 list
+make kafka-topics
+# Cria os 17 tópicos do sistema. Idempotente — pode rodar mais de uma vez.
 ```
 
-Saída esperada: `showpass.EventService`
-
-**4. Fazer uma chamada gRPC diretamente**
+**3. Subir os serviços (dois terminais separados)**
 
 ```bash
-grpcurl -plaintext -d '{"eventId":"018e9999-...","organizerId":"018e1234-..."}' \
-  localhost:50051 showpass.EventService/GetEventWithSeats
+# Terminal 1 — event-service (também sobe o servidor gRPC na porta 50051)
+pnpm --filter @showpass/event-service run dev
+
+# Terminal 2 — booking-service
+pnpm --filter @showpass/booking-service run dev
 ```
 
-Compare a latência com a mesma chamada via HTTP REST — o gRPC deve ser ~40% mais rápido em chamadas internas.
+Aguardar as mensagens de confirmação:
 
-### Testando CQRS (Passo 18.2)
+```
+Event Service rodando na porta 3003
+gRPC server ativo na porta 50051      ← novo no cap-18
+Kafka consumer ativo (auth.organizer-*)
 
-O CQRS separa reads de writes. Para verificar que as queries de leitura vão para a read replica:
-
-**1. Monitorar qual banco recebe cada query**
-
-```bash
-# Em um terminal — logs do primary
-docker compose logs -f postgres-primary | grep -v "checkpoint"
-
-# Em outro terminal — logs da replica
-docker compose logs -f postgres-replica | grep -v "checkpoint"
+Booking Service rodando na porta 3004
+Kafka consumer ativo (events.ticket-batch-*)
 ```
 
-**2. Fazer uma query de leitura e uma de escrita**
+**4. Obter IDs reais para os testes**
 
 ```bash
-# Leitura: listar reservas (deve aparecer só no log da replica)
-curl "http://localhost:3004/bookings/reservations?eventId=$EVENT_ID" \
-  -H "Authorization: Bearer $BUYER_TOKEN"
+# EVENT_ID: um evento on_sale no banco
+EVENT_ID=$(docker compose exec postgres psql -U event_svc -d showpass_events \
+  -t -c "SELECT id FROM events WHERE status='on_sale' LIMIT 1;" | tr -d ' \n')
+echo "EVENT_ID=$EVENT_ID"
 
-# Escrita: criar reserva (deve aparecer só no log do primary).
-# DTO atualizado do cap-06: items[] com ticketBatchId + seatId.
-curl -X POST http://localhost:3004/bookings/reservations \
+# BATCH_ID: um lote de ingressos deste evento
+BATCH_ID=$(docker compose exec postgres psql -U event_svc -d showpass_events \
+  -t -c "SELECT id FROM ticket_batches WHERE event_id='$EVENT_ID' LIMIT 1;" | tr -d ' \n')
+echo "BATCH_ID=$BATCH_ID"
+
+# BUYER_TOKEN: fazer login como comprador
+BUYER_TOKEN=$(curl -s -X POST http://localhost:3006/auth/buyers/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"buyer@showpass.com","password":"buyer123"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+echo "BUYER_TOKEN obtido: ${BUYER_TOKEN:0:30}..."
+```
+
+> Se o auth-service (porta 3006) não estiver rodando localmente, suba-o também:
+> `pnpm --filter @showpass/auth-service run dev`
+
+---
+
+### Teste 18.1 — gRPC
+
+O event-service expõe o método `GetEvent` via gRPC na porta 50051.
+O booking-service chama esse método internamente — em vez de HTTP REST.
+
+**Verificar que o servidor gRPC está de pé**
+
+```bash
+# porta 50051 deve aparecer como LISTEN
+ss -tlnp | grep 50051
+# LISTEN  0  511  0.0.0.0:50051  ...  ("node",pid=XXXX)
+```
+
+**Chamar o gRPC com um script Node.js** (não precisa instalar grpcurl)
+
+```bash
+node - <<'EOF'
+const grpc       = require('@grpc/grpc-js');
+const protoLoader = require('@grpc/proto-loader');
+const path       = require('path');
+
+const PROTO = path.join(process.cwd(), 'packages/proto/event.proto');
+const def   = protoLoader.loadSync(PROTO, { keepCase: true, longs: String, enums: String });
+const svc   = grpc.loadPackageDefinition(def).showpass.events.EventService;
+const client = new svc('localhost:50051', grpc.credentials.createInsecure());
+
+// Substitua pelo EVENT_ID real obtido acima
+const EVENT_ID = process.env.EVENT_ID || 'cole-aqui-o-uuid';
+
+client.GetEvent({ event_id: EVENT_ID }, (err, res) => {
+  if (err) { console.error('ERRO:', err.message); process.exit(1); }
+  console.log('Resposta gRPC:');
+  console.log(JSON.stringify(res, null, 2));
+  process.exit(0);
+});
+setTimeout(() => { console.error('TIMEOUT'); process.exit(1); }, 5000);
+EOF
+```
+
+Saída esperada:
+
+```json
+{
+  "id": "a644d8e5-...",
+  "title": "ShowPass Festival 2026",
+  "status": "on_sale",
+  "organizer_id": "56babcd8-...",
+  "max_tickets_per_order": 4
+}
+```
+
+**Comparar latência: gRPC vs HTTP REST**
+
+```bash
+# HTTP REST (equivalente)
+time curl -s "http://localhost:3003/events/$EVENT_ID/public-meta" > /dev/null
+
+# gRPC — rode o script acima com `time node - <<'EOF' ...`
+```
+
+O gRPC é ~30-40% mais rápido em chamadas internas porque usa HTTP/2 com Protobuf
+(payload binário compacto) em vez de HTTP/1.1 com JSON texto.
+
+**O que provar:** o booking-service NÃO faz mais `fetch()` HTTP para verificar o
+status do evento — usa o `EventGrpcClient` que chama o servidor gRPC diretamente.
+Veja em `apps/booking-service/src/modules/events/event-grpc.client.ts`.
+
+---
+
+### Teste 18.2 — CQRS
+
+O CQRS separa intenções de mudança (Commands) de consultas (Queries).
+Neste setup, `CqrsModule` já está ativo — você pode ver no log de inicialização:
+
+```bash
+grep "CqrsModule\|SagasModule\|CreateReservation\|GetBuyerReservations" \
+  <(pnpm --filter @showpass/booking-service run dev 2>&1)
+# [InstanceLoader] CqrsModule dependencies initialized
+```
+
+**Verificar que os handlers CQRS estão registrados**
+
+```bash
+# No log do booking-service (já em execução), procurar:
+grep -i "cqrs\|handler\|command" /tmp/showpass-logs/booking-service.log
+```
+
+**Como o Command flui ao criar uma reserva**
+
+```bash
+# 1. POST → ReservationsController.create()
+# 2. Controller chama ReservationsService.create() diretamente (compatibilidade)
+# 3. CreateReservationHandler está registrado e pode ser ativado via CommandBus
+#    em qualquer futuro refactor do controller sem mudar a lógica de negócio
+
+curl -s -X POST http://localhost:3004/bookings/reservations \
   -H "Authorization: Bearer $BUYER_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{
-    \"eventId\":\"$EVENT_ID\",
-    \"items\":[{\"ticketBatchId\":\"$BATCH_PISTA_ID\",\"seatId\":\"$SEAT_ID\",\"quantity\":1}]
-  }"
+    \"eventId\": \"$EVENT_ID\",
+    \"items\": [{\"ticketBatchId\": \"$BATCH_ID\", \"seatId\": null, \"quantity\": 1}]
+  }" | python3 -m json.tool
 ```
 
-### Testando Circuit Breaker (Passo 18.3)
+**O que o CQRS separa visualmente**
 
-**1. Derrubar o event-service para simular falha**
+| Arquivo | Responsabilidade |
+|---|---|
+| `commands/create-reservation.command.ts` | **Intenção**: "quero criar uma reserva" |
+| `handlers/create-reservation.handler.ts` | **Execução**: valida + persiste + emite Kafka |
+| `events/reservation-created.event.ts` | **Notificação interna**: domain event in-process |
+| `queries/get-buyer-reservations.query.ts` | **Leitura**: busca reservas sem efeito colateral |
+
+> **Por que CQRS importa em escala?** Queries podem ser roteadas para uma read
+> replica do Postgres (sem afetar o primary de escrita), e Commands podem ter
+> rate-limiting separado das consultas. Em pico de 300k usuários, separar os
+> caminhos evita que leituras de consulta degradem a latência das reservas.
+
+---
+
+### Teste 18.3 — Circuit Breaker
+
+O Circuit Breaker envolve as chamadas Redis em `SeatLockService.acquireOne()`.
+Se o Redis cair, o fallback retorna `false` imediatamente — sem esperar timeout.
+
+**Simulação: pausar o Redis e tentar reservar**
 
 ```bash
-# Parar o event-service
-# Ctrl+C no terminal do event-service
+# Terminal 1: monitorar os logs do booking-service
+tail -f /tmp/showpass-logs/booking-service.log | grep -E "Circuit|ABERTO|FECHADO|HALF"
 
-# Fazer 5 requests ao booking-service (que depende do event-service via gRPC)
-for i in {1..5}; do
-  curl -s -X POST http://localhost:3004/bookings/reservations \
+# Terminal 2: pausar o Redis (simula falha)
+docker compose pause redis
+echo "Redis pausado — circuit breaker vai abrir após 10+ chamadas falhadas"
+
+# Fazer várias requisições de reserva (serão rejeitadas, mas SEM timeout de rede)
+for i in {1..12}; do
+  RESP=$(curl -s -o /dev/null -w "%{http_code} (%{time_total}s)" \
+    -X POST http://localhost:3004/bookings/reservations \
     -H "Authorization: Bearer $BUYER_TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{
-      \"eventId\":\"$EVENT_ID\",
-      \"items\":[{\"ticketBatchId\":\"$BATCH_PISTA_ID\",\"seatId\":\"$SEAT_ID\",\"quantity\":1}]
-    }" | jq .statusCode
+    -d "{\"eventId\":\"$EVENT_ID\",\"items\":[{\"ticketBatchId\":\"$BATCH_ID\",\"seatId\":null,\"quantity\":1}]}")
+  echo "Req $i: $RESP"
 done
 ```
 
-As primeiras retornam `503 Service Unavailable`. Após 5 falhas, o circuit breaker abre e as próximas retornam **imediatamente** (sem esperar timeout de rede) com a resposta do fallback.
+Observe as primeiras requisições demorando ~3s (timeout do CB) e as seguintes
+retornando **imediatamente** (CB aberto, fallback ativo):
 
-**2. Restaurar o event-service e ver o circuit fechar**
-
-```bash
-pnpm --filter @showpass/event-service run dev
+```
+Req  1: 409 (3.012s)   ← aguarda timeout Redis
+Req  2: 409 (3.008s)
+...
+Req 11: 409 (0.002s)   ← CB ABERTO: retorno instantâneo do fallback
+Req 12: 409 (0.001s)   ← sem tocar o Redis
 ```
 
-Após ~30 segundos (janela de half-open), o circuit breaker testa uma request. Se bem-sucedida, fecha o circuito e o sistema volta ao normal.
+No log do booking-service:
 
-### Testando o Saga Pattern (Passo 18.4)
-
-**1. Monitorar os eventos Kafka do saga**
-
-```bash
-# Em terminais separados, consumir cada tópico do saga
-docker compose exec kafka kafka-console-consumer.sh \
-  --bootstrap-server localhost:9092 --topic reservation.created --from-beginning &
-
-docker compose exec kafka kafka-console-consumer.sh \
-  --bootstrap-server localhost:9092 --topic payment.confirmed --from-beginning &
-
-docker compose exec kafka kafka-console-consumer.sh \
-  --bootstrap-server localhost:9092 --topic ticket.issued --from-beginning &
+```
+[CircuitBreaker] [redis-seat-lock] ABERTO — rejeitando chamadas até recuperação
 ```
 
-**2. Executar o fluxo completo**
+**Restaurar o Redis e observar o circuit fechar**
 
-Faça uma reserva → pagamento → verifique que os tópicos recebem os eventos na sequência correta.
+```bash
+docker compose unpause redis
+echo "Redis restaurado — aguardar ~30s para HALF-OPEN"
+sleep 32
 
-**3. Testar a compensação (rollback)**
+# Fazer uma nova requisição — o CB testa a recuperação
+curl -s -X POST http://localhost:3004/bookings/reservations \
+  -H "Authorization: Bearer $BUYER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"eventId\":\"$EVENT_ID\",\"items\":[{\"ticketBatchId\":\"$BATCH_ID\",\"seatId\":null,\"quantity\":1}]}" \
+  | python3 -m json.tool
+```
 
-Interrompa o worker-service após o pagamento confirmado mas antes da emissão do ingresso. Verifique que o saga emite um evento de compensação `ticket.generation.failed` e que o status do pedido volta para o estado correto.
+No log:
+
+```
+[CircuitBreaker] [redis-seat-lock] HALF-OPEN — testando recuperação
+[CircuitBreaker] [redis-seat-lock] FECHADO — voltando à operação normal
+```
+
+> **Por que o fallback retorna `false` e não lança exceção?**
+> `false` é interpretado como "assento indisponível" — o buyer recebe 409 com
+> mensagem amigável ("assentos não disponíveis") em vez de 500 ("erro interno").
+> O sistema degrada graciosamente: reservas são recusadas temporariamente,
+> mas o serviço não cai.
+
+---
+
+### Teste 18.4 — Saga Pattern
+
+O `BookingSaga` escuta `payment.confirmed` e `payment.failed` no Kafka.
+Você pode injetar eventos manualmente para testar a compensação.
+
+**Verificar que o Saga está inscrito nos tópicos de pagamento**
+
+```bash
+# O consumer group booking-service-consumer deve ter payment.* no assignment
+docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 \
+  --describe --group booking-service-consumer \
+  | grep -E "TOPIC|payment"
+```
+
+Saída esperada:
+
+```
+TOPIC                      PARTITION  ...
+payments.payment-confirmed     0      ...
+payments.payment-failed        0      ...
+```
+
+**Criar uma reserva pendente para usar no teste**
+
+```bash
+RESERVATION=$(curl -s -X POST http://localhost:3004/bookings/reservations \
+  -H "Authorization: Bearer $BUYER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"eventId\":\"$EVENT_ID\",\"items\":[{\"ticketBatchId\":\"$BATCH_ID\",\"seatId\":null,\"quantity\":1}]}")
+
+RESERVATION_ID=$(echo $RESERVATION | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "Reserva criada: $RESERVATION_ID (status: pending)"
+
+# Confirmar status no banco
+docker compose exec postgres psql -U booking_svc -d showpass_booking \
+  -c "SELECT id, status FROM reservations WHERE id='$RESERVATION_ID';"
+```
+
+**Simular pagamento confirmado: injetar evento Kafka manualmente**
+
+```bash
+# Publicar payment.confirmed no Kafka com os dados da reserva
+echo "{\"orderId\":\"00000000-0000-0000-0000-000000000001\",\"buyerId\":\"$BUYER_ID\",\"items\":[{\"reservationId\":\"$RESERVATION_ID\",\"seatId\":null}]}" \
+  | docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh \
+      --bootstrap-server localhost:9092 \
+      --topic payments.payment-confirmed
+
+echo "Evento injetado — aguardar 2s e verificar status"
+sleep 2
+
+# Verificar que a saga atualizou a reserva para 'confirmed'
+docker compose exec postgres psql -U booking_svc -d showpass_booking \
+  -c "SELECT id, status FROM reservations WHERE id='$RESERVATION_ID';"
+```
+
+Resultado esperado:
+
+```
+                  id                  |  status   
+--------------------------------------+-----------
+ xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx | confirmed   ← saga atualizou
+```
+
+**Simular pagamento falhou: testar a compensação (rollback)**
+
+```bash
+# Criar uma nova reserva para testar o rollback
+RESERVATION2=$(curl -s -X POST http://localhost:3004/bookings/reservations \
+  -H "Authorization: Bearer $BUYER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"eventId\":\"$EVENT_ID\",\"items\":[{\"ticketBatchId\":\"$BATCH_ID\",\"seatId\":null,\"quantity\":1}]}")
+RESERVATION_ID2=$(echo $RESERVATION2 | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+# Injetar payment.failed
+echo "{\"orderId\":\"00000000-0000-0000-0000-000000000002\",\"buyerId\":\"$BUYER_ID\"}" \
+  | docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh \
+      --bootstrap-server localhost:9092 \
+      --topic payments.payment-failed
+
+sleep 2
+
+# Verificar que a saga cancelou a reserva e liberou os locks
+docker compose exec postgres psql -U booking_svc -d showpass_booking \
+  -c "SELECT id, status FROM reservations WHERE id='$RESERVATION_ID2';"
+# status: cancelled ← compensação aplicada
+```
+
+No log do booking-service:
+
+```
+[BookingSaga] Saga: pagamento falhou, compensando reservas { orderId: '...', buyerId: '...' }
+[BookingSaga] Reserva compensada após falha de pagamento { reservationId: '...', seatCount: 0 }
+```
+
+> **O que a Saga garante:** se o pagamento falhar APÓS a reserva ser criada
+> (e o Redis lock adquirido), os locks são liberados imediatamente — outros
+> compradores podem tentar aqueles assentos sem esperar os 7 minutos do TTL.
+> É a diferença entre uma janela de 10 segundos e uma de 7 minutos de bloqueio.
 
 ---
 

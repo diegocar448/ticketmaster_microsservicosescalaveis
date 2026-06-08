@@ -8,10 +8,23 @@ import { NestFactory } from '@nestjs/core';
 import { Transport } from '@nestjs/microservices';
 import type { MicroserviceOptions } from '@nestjs/microservices';
 import { Logger } from '@nestjs/common';
+import { join } from 'path';
 import { AppModule } from './app.module.js';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
+
+  // ─── gRPC server (cap-18) ───────────────────────────────────────────────────
+  // Escuta na porta 50051 — usada pelo booking-service via EventGrpcClient.
+  // HTTP/2 sobre TCP: uma conexão por cliente, multiplexing de streams.
+  app.connectMicroservice<MicroserviceOptions>({
+    transport: Transport.GRPC,
+    options: {
+      url: `0.0.0.0:${process.env['GRPC_PORT'] ?? '50051'}`,
+      package: 'showpass.events',
+      protoPath: join(process.cwd(), '../../packages/proto/event.proto'),
+    },
+  });
 
   // ─── Kafka consumer (hybrid app) ────────────────────────────────────────────
   // Event-service é simultaneamente:
@@ -42,6 +55,7 @@ async function bootstrap(): Promise<void> {
   const port = parseInt(process.env['PORT'] ?? '3003', 10);
   await app.listen(port);
   Logger.log(`Event Service rodando na porta ${String(port)}`);
+  Logger.log(`gRPC server ativo na porta ${process.env['GRPC_PORT'] ?? '50051'}`);
   Logger.log('Kafka consumer ativo (auth.organizer-*)');
 }
 

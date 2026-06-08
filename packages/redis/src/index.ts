@@ -5,3 +5,5 @@
 export { RedisModule, REDIS_CLIENT } from './redis.module.js';
 export type { RedisModuleOptions } from './redis.module.js';
 export { RedisService } from './redis.service.js';
+export { createCircuitBreaker } from './circuit-breaker.js';
+export type { CircuitBreakerOptions } from './circuit-breaker.js';
