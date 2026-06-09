@@ -254,6 +254,9 @@ make dev-stop       # para todos
 make dev-status     # status
 make infra-up       # sobe apenas postgres, redis, kafka, elasticsearch
 make infra-down     # para a infra Docker
+make obs-up         # sobe observabilidade (OTEL, Prometheus, Grafana, Loki, Tempo)
+make obs-down       # para os serviços de observabilidade
+make obs-logs       # tail dos logs de observabilidade
 make db-migrate     # roda migrations em todos os serviços
 make db-seed        # popula planos e categorias
 make gen-keys       # re-gera par de chaves RSA (se precisar trocar)
