@@ -7,6 +7,7 @@
         build test lint type-check audit ci \
         up down compose-build ascii-link \
         infra-up infra-down infra-logs kafka-topics \
+        obs-up obs-down obs-logs \
         db-generate db-migrate db-seed db-studio \
         copy-env gen-keys \
         github-setup clean help
@@ -73,6 +74,17 @@ infra-down: ascii-link
 
 infra-logs: ascii-link
 	$(DC) logs -f postgres redis kafka elasticsearch
+
+# Sobe os serviços de observabilidade (otel-collector, prometheus, grafana, loki, tempo)
+# Definidos com profiles: ["observability"] no docker-compose.yml — não sobem com make up
+obs-up: ascii-link
+	$(DC) --profile observability up otel-collector prometheus grafana loki tempo -d
+
+obs-down: ascii-link
+	$(DC) --profile observability down otel-collector prometheus grafana loki tempo
+
+obs-logs: ascii-link
+	$(DC) --profile observability logs -f otel-collector prometheus grafana loki tempo
 
 # Pré-cria todos os tópicos Kafka usados pelos serviços (idempotente).
 # dev-services já chama isso automaticamente — use manualmente após um
@@ -221,6 +233,9 @@ help:
 	@echo "  make infra-down   Para todos os containers"
 	@echo "  make infra-logs   Tail de logs da infra"
 	@echo "  make kafka-topics Pré-cria todos os tópicos Kafka (idempotente)"
+	@echo "  make obs-up       Sobe observabilidade (OTEL, Prometheus, Grafana, Loki, Tempo)"
+	@echo "  make obs-down     Para os serviços de observabilidade"
+	@echo "  make obs-logs     Tail de logs da observabilidade"
 	@echo ""
 	@echo "Banco de dados:"
 	@echo "  make db-generate  Gera os Prisma Clients (antes de type-check/build)"

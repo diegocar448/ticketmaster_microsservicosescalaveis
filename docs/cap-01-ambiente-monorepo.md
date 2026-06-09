@@ -292,10 +292,14 @@ services:
     networks:
       - data
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      # PORQUÊ bash /dev/tcp em vez de kafka-topics.sh: cada check iniciaria uma JVM
+      # nova (~vários segundos). Em máquinas lentas / WSL2 isso estoura o timeout e o
+      # container vira "unhealthy" mesmo com o broker no ar. O teste TCP puro é sub-segundo.
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/9092' 2>/dev/null"]
       interval: 10s
-      timeout: 10s
-      retries: 5
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -326,10 +330,16 @@ services:
     networks:
       - data
     healthcheck:
+      # PORQUÊ start_period tão alto: o Elasticsearch 9.x pode levar vários minutos
+      # para ficar pronto (no WSL2, ~9 min: bootstrap de plugins OTel/APM/Watcher +
+      # alocação inicial de shards, quando o cluster fica "red" por alguns segundos).
+      # Durante o start_period as falhas não contam — sem ele, o container vira
+      # "unhealthy" antes de subir e derruba todos os serviços que dependem dele.
       test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -v '\"status\":\"red\"'"]
-      interval: 10s
+      interval: 15s
       timeout: 10s
-      retries: 10
+      retries: 20
+      start_period: 600s
 
   # ─────────────────────────────────────────────
   # APLICAÇÕES — rede `private`

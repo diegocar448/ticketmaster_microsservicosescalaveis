@@ -90,15 +90,12 @@ services:
     networks:
       - data
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list",
-        ]
+      # bash /dev/tcp evita iniciar uma nova JVM a cada check (kafka-topics.sh era lento demais no WSL2)
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/9092' 2>/dev/null"]
       interval: 10s
-      timeout: 15s
+      timeout: 5s
       retries: 10
-      start_period: 120s
+      start_period: 30s
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -129,15 +126,16 @@ services:
     networks:
       - data
     healthcheck:
+      # ES 9.x no WSL2 leva ~9 min para subir — start_period precisa cobrir esse tempo
       test:
         [
           "CMD-SHELL",
           "curl -sf http://localhost:9200/_cluster/health | grep -v '\"status\":\"red\"'",
         ]
-      interval: 10s
+      interval: 15s
       timeout: 10s
-      retries: 10
-      start_period: 30s
+      retries: 20
+      start_period: 600s
 
   # ─────────────────────────────────────────────
   # APLICAÇÕES — rede `private`
