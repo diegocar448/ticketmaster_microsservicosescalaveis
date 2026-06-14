@@ -71,6 +71,7 @@ Flags: `-t dark` (tema escuro) · `-b` (cor de fundo) · `-s 2` (escala 2x para 
 | Serviço | Porta HTTP | Porta gRPC | Banco |
 |---|---|---|---|
 | api-gateway | 3000 | — | — |
+| gatekeeper-service (cap-19) | 3007 | — | Redis (fila, PoW, bot score) |
 | auth-service | 3006 | — | showpass_auth |
 | event-service | 3003 | 50051 | showpass_events |
 | booking-service | 3004 | — | showpass_booking |

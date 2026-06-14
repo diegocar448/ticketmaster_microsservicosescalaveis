@@ -756,6 +756,7 @@ Cap 10-13: Frontend moderno (Next.js 16, SSR, Seat Map SVG, Dashboard)
 Cap 14-15: Confiança (Testes de concorrência, CI/CD com Cosign)
 Cap 16-17: Produção real (EKS HPA, Terraform, OpenTelemetry, Grafana)
 Cap 18:    Big tech patterns (gRPC, CQRS, Circuit Breaker, Saga)
+Cap 19:    Escala extrema (80M, Fan Gate anti-bot, antifraude, Outbox) ← bônus
 
 Problema resolvido:
   300.000 pessoas tentam o mesmo assento → apenas 1 consegue → zero double booking
@@ -767,7 +768,9 @@ Stack: Node.js 22 + NestJS 11 + Prisma 6 + Next.js 16 + Kafka 4.2 + ES 9
 
 ---
 
-> **Você chegou ao final.** O ShowPass é agora um sistema que resiste a picos de 300.000 usuários simultâneos, é observável do nível de pod Kubernetes até a métrica de negócio individual, e segue os mesmos padrões que empresas como Spotify, Airbnb e o Ticketmaster real usam em produção.
+> **Você chegou ao fim da jornada principal.** O ShowPass é agora um sistema que resiste a picos de 300.000 usuários simultâneos, é observável do nível de pod Kubernetes até a métrica de negócio individual, e segue os mesmos padrões que empresas como Spotify, Airbnb e o Ticketmaster real usam em produção.
+>
+> **Pronto para o nível "boss final"?** O [Capítulo 19 — Escala Extrema, Fan Gate e Antifraude](cap-19-escala-extrema-antifraude.md) multiplica a escala por 8 (80M concorrentes), adiciona defesa anti-bot na borda, uma camada antifraude completa e as regras de negócio do mercado brasileiro (limite por CPF, meia-entrada) — tudo sem explodir o banco transacional.
 
 ---
 

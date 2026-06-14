@@ -609,6 +609,17 @@ k6 run --env EVENT_ID=xxx --env BATCH_ID=yyy infra/k6/seat-reservation.js
 # http_req_duration p(95)=287ms p(99)=412ms
 ```
 
+Além do `seat-reservation.js` (que mede throughput/latência), há dois cenários que
+**provam invariantes** — com threshold que falha o teste se a invariante quebrar:
+
+- `infra/k6/same-seat-stampede.js` — 500 compradores no **mesmo assento**: exatamente
+  1 reserva, resto 409. Prova **zero double booking** (a versão local do "300k no mesmo assento").
+- `infra/k6/cpf-limit-stampede.js` — 200 reservas com o **mesmo CPF**: exatamente 4 passam.
+  Prova o **limite atômico por CPF** (cap-19).
+
+Procedimento completo, pré-requisitos e o gotcha de rodar o k6 **nativo no host** (WSL2):
+ver `infra/k6/README.md`.
+
 ---
 
 ## Testando na prática

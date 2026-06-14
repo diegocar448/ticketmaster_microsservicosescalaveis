@@ -10,6 +10,7 @@ import { PrismaService } from '../../prisma/prisma.service.js';
 import { LocksModule } from '../locks/locks.module.js';
 import { ReservationsController } from './reservations.controller.js';
 import { ReservationsService } from './reservations.service.js';
+import { CpfLimitService } from './cpf-limit.service.js';
 import { ReservationExpirationJob } from './reservation-expiration.job.js';
 import { CreateReservationHandler } from './handlers/create-reservation.handler.js';
 import { GetBuyerReservationsHandler } from './queries/get-buyer-reservations.query.js';
@@ -30,6 +31,7 @@ const QUERY_HANDLERS   = [GetBuyerReservationsHandler];
   controllers: [ReservationsController],
   providers: [
     ReservationsService,
+    CpfLimitService,
     ReservationExpirationJob,
     PrismaService,
     ...COMMAND_HANDLERS,

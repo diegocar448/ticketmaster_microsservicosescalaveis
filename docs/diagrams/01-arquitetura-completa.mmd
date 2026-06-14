@@ -7,7 +7,9 @@ flowchart TB
         WEB["Next.js :3001\nFrontend (React)"]
     end
 
-    GW["api-gateway :3000\nJWT RS256 - Rate Limit - Proxy\nx-user-id / x-user-type"]
+    GATE["gatekeeper-service :3007\nFila Virtual - Proof of Work\nBot Score - Entry Pass JWT"]
+
+    GW["api-gateway :3000\nJWT RS256 - Rate Limit - Proxy\nEntry Pass Guard\nx-user-id / x-user-type"]
 
     subgraph SVC["Microservicos (Kubernetes / EKS)"]
         direction LR
@@ -50,9 +52,10 @@ flowchart TB
     end
 
     %% Caminho sincrono (requisicao do usuario)
+    %% A enxurrada do mega-evento passa pelo Fan Gate ANTES do gateway (cap-19).
     USERS -->|HTTPS| CF
     USERS -->|HTTPS| WEB
-    CF --> GW
+    CF --> GATE
     WEB --> GW
     GW --> AUTH
     GW --> EVENT
@@ -92,6 +95,11 @@ flowchart TB
     LOKI --> GRAFANA
     TEMPO --> GRAFANA
 
+    %% Fan Gate (cap-19) — declarado por ULTIMO de proposito: vira as arestas 35 e 36,
+    %% fora das faixas coloridas por linkStyle (que param no 34). Nao quebra os indices.
+    GATE -->|"entry pass JWT"| GW
+    GATE --> REDIS
+
     classDef service fill:#1e3a5f,stroke:#4a90d9,color:#fff
     classDef db fill:#2d4a1e,stroke:#5a9e3a,color:#fff
     classDef infra fill:#4a2d1e,stroke:#c07a3a,color:#fff
@@ -103,7 +111,7 @@ flowchart TB
     class USERDB,EVENTDB,BOOKINGDB,PAYMENTDB,REDIS,ES db
     class KAFKA infra
     class OTEL,PROM,LOKI,TEMPO,GRAFANA obs
-    class GW gateway
+    class GW,GATE gateway
     class USERS,STRIPE,CF,WEB external
 
     classDef legend fill:#333,stroke:#666,color:#333,width:14px,height:14px
