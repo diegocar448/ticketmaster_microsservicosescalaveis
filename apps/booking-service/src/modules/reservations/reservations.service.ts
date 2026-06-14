@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service.js';
 import type { Prisma } from '../../prisma/generated/index.js';
 import { SeatLockService } from '../locks/seat-lock.service.js';
+import { CpfLimitService } from './cpf-limit.service.js';
 import { BusinessMetricsService } from '../../common/metrics/business-metrics.service.js';
 import { KafkaProducerService } from '@showpass/kafka';
 import { KAFKA_TOPICS } from '@showpass/types';
@@ -31,6 +32,7 @@ export class ReservationsService {
     private readonly seatLock: SeatLockService,
     private readonly kafka: KafkaProducerService,
     private readonly metrics: BusinessMetricsService,
+    private readonly cpfLimit: CpfLimitService,
   ) {}
 
   /**
@@ -74,8 +76,19 @@ export class ReservationsService {
         .map((item) => item.seatId as string);
 
       let locksAcquired = false;
+      // Compensação do limite por CPF: setada quando o CPF consome a cota.
+      // Chamada no catch para devolver a cota se uma etapa posterior falhar.
+      let releaseCpf: (() => Promise<void>) | null = null;
 
       try {
+        // ─── 3.5. Limite por CPF (cap-19) — ANTES dos locks ──────────────────
+        // Consome a cota atomicamente no Redis. Se estourar, 409 imediato (cedo
+        // e barato — nem chega a tocar os locks). Só aplica quando o CPF é enviado.
+        if (dto.cpf) {
+          const totalQuantity = items.reduce((sum, i) => sum + i.quantity, 0);
+          releaseCpf = await this.cpfLimit.consume(dto.eventId, dto.cpf, totalQuantity);
+        }
+
         // ─── 4. Adquirir locks — ALL OR NOTHING ──────────────────────────────
         if (seatIdsToLock.length > 0) {
           const lockResult = await this.seatLock.acquireMultiple(
@@ -176,6 +189,11 @@ export class ReservationsService {
           );
           this.logger.warn('Locks liberados após falha no banco', { buyerId });
         }
+
+        // ─── COMPENSAÇÃO: devolver a cota do CPF se foi consumida ─────────────
+        // releaseCpf só está setada se o consume teve sucesso (não no caso de
+        // limite estourado — aí nada foi incrementado).
+        if (releaseCpf) await releaseCpf();
 
         throw error;
       }

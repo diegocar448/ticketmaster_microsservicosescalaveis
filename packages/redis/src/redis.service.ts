@@ -115,4 +115,49 @@ export class RedisService {
   incrementAvailable(key: string, by = 1): Promise<number> {
     return this.redis.incrby(key, by);
   }
+
+  /**
+   * Check-and-increment ATÔMICO com teto. Usado para regras de negócio que
+   * precisam de um limite sob alta concorrência — ex.: "máximo N ingressos por
+   * CPF neste evento" (cap-19).
+   *
+   * Por que Lua e não GET seguido de INCRBY?
+   * O mesmo motivo do SETNX dos assentos: sob 500 requisições simultâneas do
+   * mesmo CPF, um GET+INCRBY separados deixam todas lerem "0" ao mesmo tempo e
+   * todas passarem (race condition clássica). O Lua roda inteiro dentro do
+   * Redis single-threaded — impossível intercalar a leitura e a escrita.
+   *
+   * Aditivo: NÃO toca os scripts críticos de acquireLock/releaseLock/renewLock.
+   *
+   * @returns o novo total se aceito; -1 se estouraria o limite (sem incrementar)
+   */
+  async tryConsumeWithLimit(
+    key: string,
+    amount: number,
+    limit: number,
+    ttlSeconds: number,
+  ): Promise<number> {
+    const luaScript = `
+      local atual  = tonumber(redis.call("GET", KEYS[1]) or "0")
+      local limite = tonumber(ARGV[1])
+      local pedido = tonumber(ARGV[2])
+      if atual + pedido > limite then
+        return -1
+      end
+      local novo = redis.call("INCRBY", KEYS[1], pedido)
+      if novo == pedido then
+        redis.call("EXPIRE", KEYS[1], tonumber(ARGV[3]))
+      end
+      return novo
+    `;
+
+    return (await this.redis.eval(
+      luaScript,
+      1,
+      key,
+      limit,
+      amount,
+      ttlSeconds,
+    )) as number;
+  }
 }

@@ -25,9 +25,18 @@ Verificar só o banco OU só o Redis é INCORRETO.
 `releaseLock` e `renewLock` usam Lua para garantir atomicidade do GET+DEL.
 NUNCA substituir por comandos Redis separados — cria race condition.
 
+### Limite por CPF é atômico (cap-19)
+`CpfLimitService.consume()` usa `RedisService.tryConsumeWithLimit` (Lua check-and-increment)
+para garantir "no máximo N ingressos por CPF" sob alta concorrência.
+NUNCA trocar por `SELECT count(*)` + `INSERT` — é a mesma race condition que o SETNX evita.
+O `consume()` roda ANTES dos locks e devolve uma função de COMPENSAÇÃO (rollback do contador);
+se uma etapa posterior falhar, ela DEVE ser chamada — igual ao release dos locks.
+Limite via env `MAX_TICKETS_PER_CPF` (default 4). CPF nunca é persistido cru (hash + pepper, LGPD).
+
 ## Arquivos de alto risco
 - `src/modules/locks/seat-lock.service.ts` — núcleo do sistema anti-double-booking
 - `src/modules/reservations/reservations.service.ts` — fluxo de 6 passos
+- `src/modules/reservations/cpf-limit.service.ts` — limite atômico por CPF (cap-19)
 - `src/modules/sagas/booking.saga.ts` — compensação via eventos Kafka
 
 ## Dependências externas

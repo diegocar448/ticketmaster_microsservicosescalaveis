@@ -37,8 +37,28 @@ export const ReserveSeatResponseSchema = z.object({
 });
 export type ReserveSeatResponse = z.infer<typeof ReserveSeatResponseSchema>;
 
+// Validação de CPF — dígitos verificadores (algoritmo oficial da Receita).
+// Rejeita CPFs sintaticamente válidos mas matematicamente falsos (ex.: 111.111.111-11).
+// Exportado para reuso (front + back). NUNCA persistir o CPF cru: ver CpfLimitService
+// (hash SHA-256 + pepper) no booking-service — LGPD Art. 5 (cap-19).
+export function isValidCpf(cpf: string): boolean {
+  if (!/^\d{11}$/.test(cpf)) return false;
+  if (/^(\d)\1{10}$/.test(cpf)) return false; // todos os dígitos iguais
+  const digito = (qtd: number): number => {
+    let soma = 0;
+    for (let i = 0; i < qtd; i++) soma += Number(cpf[i]) * (qtd + 1 - i);
+    const resto = (soma * 10) % 11;
+    return resto === 10 ? 0 : resto;
+  };
+  return digito(9) === Number(cpf[9]) && digito(10) === Number(cpf[10]);
+}
+
 export const CreateReservationSchema = z.object({
   eventId: z.uuid(),
+  // CPF opcional: quando presente, o booking-service aplica o limite por CPF
+  // (anti-cambista, cap-19). Ausente = sem limite — mantém compat com o fluxo
+  // atual (frontend e load test de assento não enviam CPF).
+  cpf: z.string().regex(/^\d{11}$/).refine(isValidCpf, 'CPF inválido').optional(),
   items: z.array(
     z.object({
       ticketBatchId: z.uuid(),

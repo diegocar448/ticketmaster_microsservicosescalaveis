@@ -171,6 +171,7 @@ showpass/
 | [16](docs/cap-16-kubernetes-terraform.md) | Kubernetes & Terraform | EKS, HPA, Kustomize overlays, Terraform AWS modules |
 | [17](docs/cap-17-observabilidade.md) | Observabilidade | OpenTelemetry traces, Prometheus, Grafana, Loki, alertas |
 | [18](docs/cap-18-padroes-avancados.md) | Padrões Avançados | gRPC entre serviços, CQRS, Event Sourcing, Circuit Breaker |
+| [19](docs/cap-19-escala-extrema-antifraude.md) | Escala Extrema, Fan Gate & Antifraude | 80M concorrentes, fila virtual + Proof of Work anti-bot, pagamento assíncrono (Outbox), motor antifraude com 3DS, limite por CPF + meia-entrada, particionamento + PgBouncer |
 
 ---
 

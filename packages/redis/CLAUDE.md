@@ -22,6 +22,12 @@ Sem Lua: GET retorna ownerA, outro processo seta ownerB, DEL libera o lock de B.
 Mesma lógica: só renova se ainda for o dono.
 Usado quando checkout demora mais que 7 minutos.
 
+## tryConsumeWithLimit — Lua check-and-increment com teto (cap-19)
+Contador atômico com limite máximo: `GET` + `INCRBY` numa só operação Lua.
+Usado pelo limite por CPF no booking-service (`CpfLimitService`).
+Retorna -1 se estouraria o teto (sem incrementar), senão o novo total.
+ADITIVO — não toca os scripts de lock. Mesma garantia atômica do SETNX, aplicada a regra de negócio.
+
 ## Circuit Breaker (packages/redis/src/circuit-breaker.ts)
 Envolve chamadas Redis com opossum.
 Se Redis cair: fallback retorna `false` (lock não adquirido) → reserva rejeitada com mensagem amigável.
